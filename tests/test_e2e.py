@@ -42,15 +42,43 @@ def test_footage_is_kept_and_reloadable(settings, tmp_path):
     src.write_bytes(b"clip")
     own = tmp_path / "own.jpg"
     own.write_bytes(b"img")
-    by_scene = {0: MediaItem("pexels", "7", "video", url="https://example/x", path=src, query="cats"),
+    by_scene = {0: MediaItem("pexels", "7", "video", url="https://example/x", path=src, query="cats",
+                             credit="Jörg ≈"),
                 1: MediaItem("local", str(own), "image", path=own)}
     studio._persist_footage(folder, folder / "work", by_scene)
     assert (folder / "footage").is_dir() and not src.exists()
-    manifest = json.loads((folder / "media.json").read_text())
+    manifest = json.loads((folder / "media.json").read_text(encoding="utf-8"))
+    assert manifest["scenes"]["0"]["credit"] == "Jörg ≈"
     assert manifest["scenes"]["0"]["source"] == "pexels" and (folder / manifest["scenes"]["0"]["file"]).exists()
     back = studio._load_media_map(folder)
     assert back[0].source == "pexels" and back[0].path.exists()
     assert back[1].path == own          # your own media is referenced in place, not copied
+
+
+@needs_ffmpeg
+def test_non_ascii_script_is_written_as_utf8(settings, tmp_path):
+    """Scripts with characters outside cp1252 (arrows, bullets, emoji) must not crash a Windows render."""
+    from PIL import Image
+
+    from purffle_shorts import pipeline as P
+    media = tmp_path / "media"
+    media.mkdir()
+    Image.new("RGB", (1080, 1920), (20, 20, 40)).save(media / "octopus.png")
+    f = tmp_path / "s.json"
+    # ≈ (U+2248) and a Cyrillic name survive script clean-up but are outside cp1252, which is what Windows
+    # used to fail on when writing script.json / metadata.json / media.json.
+    f.write_text(json.dumps({"title": "Snakes ≈ Quake", "description": "They sensed ≈ danger and fled.",
+                             "hook_text": "THEY KNEW",
+                             "scenes": [{"narration": "Snakes left ≈ an hour before the quake.",
+                                         "search_query": "octopus"},
+                                        {"narration": "Then the ground shook ≈ hard.", "search_query": "octopus"}]}),
+                 encoding="utf-8")
+    s = settings.with_overrides(offline=True, tts_engine="silent", resolution=(360, 640), fps=24,
+                                music_volume=0.0, media_dir=str(media), visual_sources=["local"])
+    r = P.Studio(s).make(script_file=f)
+    assert r.ok, r.error
+    assert "≈" in json.loads((r.folder / "metadata.json").read_text(encoding="utf-8"))["title"]
+    assert "≈" in (r.folder / "script.json").read_text(encoding="utf-8")
 
 
 @needs_ffmpeg

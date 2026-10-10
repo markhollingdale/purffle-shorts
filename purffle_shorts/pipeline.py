@@ -271,7 +271,8 @@ class Studio:
         state["folder"] = folder
         work = folder / "work"
         work.mkdir(parents=True, exist_ok=True)
-        (folder / "script.json").write_text(json.dumps(script.to_dict(), indent=2, ensure_ascii=False))
+        (folder / "script.json").write_text(json.dumps(script.to_dict(), indent=2, ensure_ascii=False),
+                                            encoding="utf-8")
         try:
             self._step("voice", f"{s.tts_engine} voice")
             speech = self._speak(script, work, s)
@@ -343,7 +344,8 @@ class Studio:
                             for st, m in zip(timeline, media)],
                 "parent_id": parent_id, "created_at": now_iso(),
             }
-            (folder / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+            (folder / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False),
+                                                  encoding="utf-8")
 
             if existing:
                 rid = existing["id"]
@@ -407,7 +409,8 @@ class Studio:
                     file = str(m.path)  # a file in your own media folder: referenced in place
             entry["file"] = file
             manifest[str(idx)] = entry
-        (folder / "media.json").write_text(json.dumps({"scenes": manifest}, indent=2, ensure_ascii=False))
+        (folder / "media.json").write_text(json.dumps({"scenes": manifest}, indent=2, ensure_ascii=False),
+                                           encoding="utf-8")
 
     def rerender(self, rid: int, *, upload: bool | None = None) -> Result:
         """Re-render an existing video in place, reusing its saved script and footage.
@@ -487,7 +490,7 @@ class Studio:
             notify.send(self.s, "queued", title=rec["title"], detail="daily upload limit reached")
             return "queued"
         folder = Path(rec["folder"])
-        meta = json.loads((folder / "metadata.json").read_text()) if (folder / "metadata.json").exists() else {}
+        meta = json.loads((folder / "metadata.json").read_text(encoding="utf-8")) if (folder / "metadata.json").exists() else {}
         publish = youtube.next_publish_slot(self.s, self.history.scheduled_times())
         body = youtube.build_body(self.s, rec["title"], rec["description"] or "",
                                   json.loads(rec["tags"] or "[]"), meta.get("category_id", "27"),

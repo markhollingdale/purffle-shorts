@@ -327,7 +327,8 @@ def make_clips(studio, src: str, *, count: int = 3, crop: str = "center", upload
                         "score": plan.score, "review": [plan.reason] if plan.reason else [],
                         "duration": round(out["duration"], 2), "resolution": f"{s.width}x{s.height}",
                         "llm": llm.label if llm else "offline", "created_at": now_iso()}
-                (folder / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+                (folder / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False),
+                                                      encoding="utf-8")
                 rid = studio.history.add_video(
                     subject=src, source="clip", topic=script.topic, style="clip", language=s.language, title=title,
                     description=description, tags=script.tags, folder=str(folder), video_path=str(video),

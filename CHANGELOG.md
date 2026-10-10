@@ -7,6 +7,7 @@
 - **Edit settings in the Studio**: the System page now edits the look and content defaults — `WATERMARK`, `END_CTA`, `CHANNEL_NAME`, `AUDIENCE`, caption style/position/words/uppercase, colour grade, transitions, Ken Burns, progress bar, hook overlay, `MUSIC_DIR`, `MUSIC_FILE` and music volume/ducking. Each setting has a short description, the Music ones have a folder/file browser with a live track count, and the Studio writes only those keys back to `.env` (API keys, credentials, comments and every other line are left untouched). Changes apply to new videos without a restart; the CLI, MCP and autopilot read the same file, so they agree.
 
 ### Fixed
+- Videos no longer fail on Windows with `'charmap' codec can't encode characters` when a script, title or a footage contributor name contains a character outside the legacy cp1252 code page. `script.json`, `metadata.json`, `media.json`, the caption/voice join lists, the SRT-adjacent files and the YouTube token are now all written as UTF-8 (and ffmpeg output is read as UTF-8 with replacement).
 - Tests no longer pick up the developer's real `.env` (python-dotenv's fallback search could leak settings like `FPS` between tests); the environment is now snapshotted and restored around each test.
 
 ## 3.0.0 — 2026-09-29

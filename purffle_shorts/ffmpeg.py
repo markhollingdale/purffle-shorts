@@ -46,14 +46,14 @@ def ffprobe_bin() -> str | None:
 
 @functools.lru_cache(maxsize=1)
 def version() -> str:
-    out = subprocess.run([ffmpeg_bin(), "-hide_banner", "-version"], capture_output=True, text=True).stdout
+    out = subprocess.run([ffmpeg_bin(), "-hide_banner", "-version"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     m = re.search(r"ffmpeg version (\S+)", out)
     return m.group(1) if m else "unknown"
 
 
 @functools.lru_cache(maxsize=4)
 def _listing(kind: str) -> str:
-    return subprocess.run([ffmpeg_bin(), "-hide_banner", f"-{kind}"], capture_output=True, text=True).stdout
+    return subprocess.run([ffmpeg_bin(), "-hide_banner", f"-{kind}"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
 
 
 def has_filter(name: str) -> bool:
@@ -68,7 +68,7 @@ def run(args: list[str], *, label: str = "ffmpeg", cwd: str | Path | None = None
     cmd = [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", *args]
     log.debug("%s: %s", label, " ".join(cmd))
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd, timeout=timeout)
     except subprocess.TimeoutExpired as e:
         raise FFmpegError(f"{label} timed out after {timeout}s") from e
     if proc.returncode != 0:
@@ -83,7 +83,7 @@ def probe(path: str | Path) -> dict:
     if fp:
         out = subprocess.run(
             [fp, "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height,duration",
-             "-of", "json", path], capture_output=True, text=True)
+             "-of", "json", path], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if out.returncode == 0:
             data = json.loads(out.stdout or "{}")
             streams = data.get("streams", [])
@@ -97,7 +97,7 @@ def probe(path: str | Path) -> dict:
                 "has_video": bool(v),
             }
     # Fallback: parse `ffmpeg -i` banner (imageio-ffmpeg ships without ffprobe).
-    proc = subprocess.run([ffmpeg_bin(), "-hide_banner", "-i", path], capture_output=True, text=True)
+    proc = subprocess.run([ffmpeg_bin(), "-hide_banner", "-i", path], capture_output=True, text=True, encoding="utf-8", errors="replace")
     err = proc.stderr
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", err)
     dur = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0.0
