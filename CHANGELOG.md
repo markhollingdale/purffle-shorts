@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- **Edit settings in the Studio**: the System page now edits the look and content defaults — `WATERMARK`, `END_CTA`, `CHANNEL_NAME`, `AUDIENCE`, caption style/position/words/uppercase, colour grade, transitions, Ken Burns, progress bar, hook overlay and music volume/ducking. The Studio writes only those keys back to `.env` (API keys, credentials, comments and every other line are left untouched) and applies them to new videos without a restart; the CLI, MCP and autopilot read the same file, so they agree.
+- **Edit settings in the Studio**: the System page now edits the look and content defaults — `WATERMARK`, `END_CTA`, `CHANNEL_NAME`, `AUDIENCE`, caption style/position/words/uppercase, colour grade, transitions, Ken Burns, progress bar, hook overlay, `MUSIC_DIR`, `MUSIC_FILE` and music volume/ducking. Each setting has a short description, the Music ones have a folder/file browser with a live track count, and the Studio writes only those keys back to `.env` (API keys, credentials, comments and every other line are left untouched). Changes apply to new videos without a restart; the CLI, MCP and autopilot read the same file, so they agree.
 
 ### Fixed
 - Tests no longer pick up the developer's real `.env` (python-dotenv's fallback search could leak settings like `FPS` between tests); the environment is now snapshotted and restored around each test.

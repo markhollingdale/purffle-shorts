@@ -34,6 +34,7 @@ FILES = ("short.mp4", "video.mp4", "cover.jpg", "captions.srt", "metadata.json",
 STATIC = {"app.js": "text/javascript; charset=utf-8", "app.css": "text/css; charset=utf-8",
           "icon.svg": "image/svg+xml"}
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+AUDIO_EXT = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".opus", ".flac", ".wma", ".aiff", ".aif"}
 
 
 @dataclass
@@ -389,6 +390,47 @@ class StudioServer:
             self.studio.s = self.settings
         return self.settings_values()
 
+    def music_info(self, directory: str = "") -> dict:
+        """List the audio tracks found in a music folder (searched recursively), for the settings form."""
+        raw = (directory or self.settings.music_dir or "").strip()
+        p = Path(raw).expanduser()
+        exists = bool(raw) and p.is_dir()
+        files: list[str] = []
+        if exists:
+            try:
+                files = sorted(str(f.relative_to(p)) for f in p.rglob("*")
+                               if f.is_file() and f.suffix.lower() in AUDIO_EXT)
+            except OSError:
+                files = []
+        return {"dir": str(p) if raw else "", "exists": exists, "count": len(files), "files": files[:1000]}
+
+    def browse(self, path: str = "") -> dict:
+        """List sub-folders and audio files of a directory so the settings form can pick a music folder/file."""
+        raw = (path or "").strip()
+        if not raw:
+            start = Path(self.settings.music_dir).expanduser()
+            raw = str(start if start.is_dir() else Path.home())
+        p = Path(raw).expanduser()
+        if p.is_file():
+            p = p.parent
+        if p.exists():
+            p = p.resolve()
+        dirs: list[str] = []
+        files: list[str] = []
+        error = ""
+        if p.is_dir():
+            try:
+                entries = sorted(p.iterdir(), key=lambda e: e.name.lower())
+                dirs = [e.name for e in entries if e.is_dir() and not e.name.startswith(".")]
+                files = [e.name for e in entries if e.is_file() and e.suffix.lower() in AUDIO_EXT]
+            except OSError as e:
+                error = str(e)
+        else:
+            error = f"not a folder: {p}"
+        home = Path.home()
+        return {"path": str(p), "parent": str(p.parent) if p.parent != p else "",
+                "home": str(home) if home.is_dir() else "", "dirs": dirs, "files": files, "error": error}
+
     def channel(self) -> dict:
         rows = [r for r in self.studio.history.recent(1000) if r.get("views") is not None]
         by_style: dict[str, list[int]] = {}
@@ -462,6 +504,10 @@ def _handler(app: StudioServer, bound_host: str):
                 return self._json(app.options())
             if path == "/api/settings":
                 return self._json(app.settings_values())
+            if path == "/api/music":
+                return self._json(app.music_info(params.get("dir", "")))
+            if path == "/api/browse":
+                return self._json(app.browse(params.get("path", "")))
             if path == "/api/videos":
                 return self._json(app.videos(params.get("status", ""), params.get("q", "")))
             m = re.fullmatch(r"/api/videos/(\d+)", path)

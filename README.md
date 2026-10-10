@@ -466,7 +466,7 @@ python -m purffle_shorts studio        # opens http://127.0.0.1:8765
 - **Live progress** through topic, script, review, voice, footage, captions, render and upload, with the log.
 - **Library:** thumbnails with status, format, language and score; open one to play it, download the MP4 or captions, upload it, edit and re-render it, or delete it.
 - **Ideas, Clip, Channel and System** pages: plan and queue ideas, clip long videos, see views per video and per format, run the setup checks and copy the MCP config.
-- **Settings in the System page:** edit the look and content defaults — watermark, end call-to-action, channel name, caption style and words, colour grade, transitions, music — without opening `.env`. The Studio writes only those keys back to `.env` (keys, credentials and comments are untouched) and applies them to new videos right away.
+- **Settings in the System page:** edit the look and content defaults — watermark, end call-to-action, channel name, caption style and words, colour grade, transitions, and the music folder, fallback track and volume (with a built-in folder/file browser that shows how many tracks it found) — without opening `.env`. The Studio writes only those keys back to `.env` (keys, credentials and comments are untouched) and applies them to new videos right away.
 
 It needs no build step or internet connection (no CDN), listens on localhost only, refuses requests for any other host name, sends a strict Content-Security-Policy, and every action needs a per-session token.
 

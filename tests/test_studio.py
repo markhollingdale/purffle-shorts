@@ -6,13 +6,15 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
 from http.server import ThreadingHTTPServer
 
 import pytest
 
 from purffle_shorts import studio as ST
 
-SETTINGS_ENV = ("CHANNEL_NAME", "WATERMARK", "END_CTA", "CAPTION_MAX_WORDS", "KEN_BURNS", "MUSIC_VOLUME")
+SETTINGS_ENV = ("CHANNEL_NAME", "WATERMARK", "END_CTA", "CAPTION_MAX_WORDS", "KEN_BURNS",
+                "MUSIC_VOLUME", "MUSIC_DIR", "MUSIC_FILE")
 
 
 @pytest.fixture
@@ -145,3 +147,39 @@ def test_settings_clamps_numbers(server):
     res = json.loads(req(port, "POST", "/api/settings",
                          {"caption_max_words": 999, "music_volume": 5}, app.token)[2])
     assert res["values"]["caption_max_words"] == 20 and res["values"]["music_volume"] == 1.0
+
+
+def test_settings_expose_music_fields(server):
+    app, port = server
+    kinds = {f["attr"]: f["kind"] for f in json.loads(req(port, "GET", "/api/settings")[2])["fields"]}
+    assert kinds["music_dir"] == "str" and kinds["music_file"] == "str"
+
+
+def test_music_lookup_and_save(server, tmp_path):
+    app, port = server
+    music = tmp_path / "tunes"
+    music.mkdir()
+    (music / "one.mp3").write_bytes(b"x")
+    (music / "two.wav").write_bytes(b"x")
+    (music / "notes.txt").write_text("x", encoding="utf-8")
+    q = urllib.parse.quote(str(music), safe="")
+    info = json.loads(req(port, "GET", f"/api/music?dir={q}")[2])
+    assert info["exists"] is True and info["count"] == 2
+    assert set(info["files"]) == {"one.mp3", "two.wav"}
+    res = json.loads(req(port, "POST", "/api/settings",
+                         {"music_dir": str(music), "music_file": "two.wav"}, app.token)[2])
+    assert res["values"]["music_file"] == "two.wav"
+    text = app.env_file.read_text(encoding="utf-8")
+    assert "MUSIC_FILE=two.wav" in text and "MUSIC_DIR=" in text
+
+
+def test_browse_lists_dirs_and_audio_files(server, tmp_path):
+    app, port = server
+    root = tmp_path / "lib"
+    (root / "sub").mkdir(parents=True)
+    (root / "song.mp3").write_bytes(b"x")
+    (root / "readme.md").write_text("x", encoding="utf-8")
+    q = urllib.parse.quote(str(root), safe="")
+    data = json.loads(req(port, "GET", f"/api/browse?path={q}")[2])
+    assert "sub" in data["dirs"] and "song.mp3" in data["files"] and "readme.md" not in data["files"]
+    assert data["parent"]

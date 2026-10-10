@@ -371,6 +371,8 @@ EDITABLE: list[tuple[str, str, str]] = [
     ("ken_burns", "KEN_BURNS", "bool"),
     ("progress_bar", "PROGRESS_BAR", "bool"),
     ("hook_overlay", "HOOK_OVERLAY", "bool"),
+    ("music_dir", "MUSIC_DIR", "str"),
+    ("music_file", "MUSIC_FILE", "str"),
     ("music_volume", "MUSIC_VOLUME", "float"),
     ("music_ducking", "MUSIC_DUCKING", "bool"),
 ]

@@ -27,6 +27,9 @@ const I = {
   chart: '<svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
   refresh: '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>',
   copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  note: '<svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>',
+  home: '<svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7"/><path d="M6 10v9h12v-9"/></svg>',
 };
 
 const FORMATS = [
@@ -48,13 +51,31 @@ const STAGES = [["topic", "Topic"], ["script", "Script"], ["review", "Review"], 
   ["captions", "Captions"], ["render", "Render"], ["check", "Check"], ["upload", "Upload"]];
 const STATUS_CHIP = { uploaded: "ok", scheduled: "blue", rendered: "accent", queued: "", failed: "bad" };
 const KIND_ICON = { make: I.film, draft: I.pen, clip: I.scissors, plan: I.bulb, upload: I.upload, stats: I.chart };
-const SETTING_LABELS = {
-  channel_name: "Channel name", audience: "Audience", watermark: "Watermark", end_cta: "End call-to-action",
-  caption_style: "Caption style", caption_position: "Caption position", caption_max_words: "Max words per caption",
-  caption_uppercase: "Uppercase captions", color_grade: "Colour grade", transition: "Transitions",
-  ken_burns: "Ken Burns motion", progress_bar: "Progress bar", hook_overlay: "Hook overlay",
-  music_volume: "Music volume", music_ducking: "Duck music under voice",
+const SETTING_INFO = {
+  channel_name: ["Channel name", "Used as the default watermark and for your branding."],
+  audience: ["Audience", "Who the videos are for — guides the AI's tone and examples."],
+  watermark: ["Watermark", "Text burned into every video. Blank uses the channel name; type none to hide it."],
+  end_cta: ["End call-to-action", "Shown at the end of each video. Leave blank to turn it off."],
+  caption_style: ["Caption style", "How the spoken captions look."],
+  caption_position: ["Caption position", "Where captions sit in the frame."],
+  caption_max_words: ["Words per caption", "How many words appear on screen at once (1–20)."],
+  caption_uppercase: ["Uppercase captions", "Render the captions in capitals."],
+  color_grade: ["Colour grade", "Colour treatment applied to the footage. vivid is punchy; none leaves it untouched."],
+  transition: ["Transitions", "How scenes join together. random picks one per cut."],
+  ken_burns: ["Ken Burns motion", "Slow zoom and pan on still photos so they feel alive."],
+  progress_bar: ["Progress bar", "Thin bar along the bottom that fills as the video plays."],
+  hook_overlay: ["Hook title", "The big title shown at the start to hook viewers."],
+  music_dir: ["Music folder", "A track is picked at random per video (searched recursively)."],
+  music_file: ["Fallback track", "Used only when the music folder has no tracks."],
+  music_volume: ["Music volume", "Background music level, mixed under the voice (0–1)."],
+  music_ducking: ["Duck under voice", "Automatically lower the music while the voice is speaking."],
 };
+const SETTING_GROUPS = [
+  ["Branding", ["channel_name", "audience", "watermark", "end_cta"]],
+  ["Captions", ["caption_style", "caption_position", "caption_max_words", "caption_uppercase"]],
+  ["Look", ["color_grade", "transition", "ken_burns", "progress_bar", "hook_overlay"]],
+  ["Music", ["music_dir", "music_file", "music_volume", "music_ducking"]],
+];
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("purffle." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -136,10 +157,11 @@ async function boot() {
   status();
   window.addEventListener("hashchange", route);
   document.addEventListener("keydown", e => {
-    if (e.key === "Escape") closeDrawer();
+    if (e.key === "Escape") { if (PICK) closePicker(); else closeDrawer(); }
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && S.view === "create") startMake();
   });
   $("#drawer").addEventListener("click", e => { if (e.target.closest("[data-close]")) closeDrawer(); });
+  $("#picker").addEventListener("click", onPickerClick);
   route();
   tick();
   setInterval(tick, 1500);
@@ -820,24 +842,40 @@ function settingsCard(set) {
     return `<section class="card"><h2>Settings</h2>
       <p class="hint">No <span class="mono">.env</span> file was found next to the Studio, so these can only be edited by hand for now.</p></section>`;
   }
-  const v = set.values || {}, ch = set.choices || {}, fields = set.fields || [];
-  const field = ({ attr, kind }) => {
-    const label = SETTING_LABELS[attr] || attr, val = v[attr];
-    if (kind === "bool") return `<label class="switch"><input type="checkbox" data-set="${attr}"${val ? " checked" : ""}><span>${esc(label)}</span></label>`;
-    if (kind === "choice") return `<div class="field"><label>${esc(label)}</label><select data-set="${attr}">${(ch[attr] || []).map(o => `<option value="${esc(o)}"${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select></div>`;
-    if (kind === "int") return `<div class="field"><label>${esc(label)}</label><input type="number" min="1" max="20" data-set="${attr}" value="${esc(val)}"></div>`;
-    if (kind === "float") return `<div class="field"><label>${esc(label)}<output data-out="${attr}"> ${esc(val)}</output></label><input type="range" min="0" max="1" step="0.02" data-set="${attr}" value="${esc(val)}"></div>`;
-    const hint = attr === "watermark" ? `<p class="hint">Blank uses the channel name; “none” hides it.</p>`
-      : attr === "end_cta" ? `<p class="hint">Blank turns the end call-to-action off.</p>` : "";
-    return `<div class="field"><label>${esc(label)}</label><input type="text" data-set="${attr}" value="${esc(val)}">${hint}</div>`;
-  };
-  const bools = fields.filter(f => f.kind === "bool"), rest = fields.filter(f => f.kind !== "bool");
+  const v = set.values || {}, ch = set.choices || {};
+  const kinds = {}; (set.fields || []).forEach(f => { kinds[f.attr] = f.kind; });
+  const groups = SETTING_GROUPS.map(([name, attrs]) => {
+    const rows = attrs.filter(a => a in kinds).map(a => settingRow(a, kinds[a], v[a], ch[a])).join("");
+    return `<fieldset class="settings-group"><legend>${esc(name)}</legend>${rows}</fieldset>`;
+  }).join("");
   return `<section class="card"><h2>Settings</h2>
     <p class="hint">Saved to <span class="mono">${esc(set.env_file)}</span> and applied to new videos right away. Your keys and every other line are left untouched.</p>
-    <div class="grid2">${rest.map(field).join("")}</div>
-    <div class="checks-inline">${bools.map(field).join("")}</div>
+    <div class="settings-groups">${groups}</div>
     <div class="actions end"><button class="btn primary" id="set-save" type="button">${I.check}Save settings</button></div>
   </section>`;
+}
+
+function settingRow(attr, kind, val, choices) {
+  const [label, desc] = SETTING_INFO[attr] || [attr, ""];
+  if (kind === "bool")
+    return `<label class="setting-switch"><span class="txt"><b>${esc(label)}</b><small>${esc(desc)}</small></span><input type="checkbox" data-set="${attr}"${val ? " checked" : ""}></label>`;
+  const hint = `<p class="hint">${esc(desc)}</p>`;
+  if (kind === "choice")
+    return `<div class="field"><label>${esc(label)}</label><select data-set="${attr}">${(choices || []).map(o => `<option value="${esc(o)}"${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>${hint}</div>`;
+  if (kind === "int")
+    return `<div class="field"><label>${esc(label)}</label><input type="number" min="1" max="20" data-set="${attr}" value="${esc(val)}">${hint}</div>`;
+  if (kind === "float")
+    return `<div class="field"><label>${esc(label)}<output data-out="${attr}"> ${esc(val)}</output></label><input type="range" min="0" max="1" step="0.02" data-set="${attr}" value="${esc(val)}">${hint}</div>`;
+  if (attr === "music_dir" || attr === "music_file") {
+    const mode = attr === "music_dir" ? "dir" : "file";
+    const list = attr === "music_file" ? ' list="music-file-list"' : "";
+    const datalist = attr === "music_file" ? `<datalist id="music-file-list"></datalist>` : "";
+    const count = attr === "music_dir" ? `<small class="hint" data-music-count></small>` : "";
+    return `<div class="field"><label>${esc(label)}</label>
+      <div class="with-btn"><input type="text" data-set="${attr}" value="${esc(val)}"${list}><button class="btn ghost sm" type="button" data-pick="${mode}">${I.folder}Browse</button></div>
+      ${count}${datalist}${hint}</div>`;
+  }
+  return `<div class="field"><label>${esc(label)}</label><input type="text" data-set="${attr}" value="${esc(val)}">${hint}</div>`;
 }
 
 function bindSettings(set) {
@@ -846,6 +884,18 @@ function bindSettings(set) {
   sys.addEventListener("input", e => {
     const el = e.target.closest("[data-set]");
     if (el && el.dataset.set === "music_volume") { const o = sys.querySelector('[data-out="music_volume"]'); if (o) o.textContent = " " + el.value; }
+  });
+  sys.addEventListener("change", e => {
+    const el = e.target.closest("[data-set]");
+    if (el && el.dataset.set === "music_dir") refreshMusic();
+  });
+  sys.addEventListener("click", e => {
+    const b = e.target.closest("[data-pick]");
+    if (!b) return;
+    const dir = sys.querySelector('[data-set="music_dir"]');
+    const file = sys.querySelector('[data-set="music_file"]');
+    const start = b.dataset.pick === "dir" ? (dir ? dir.value.trim() : "") : ((file && file.value.trim()) || (dir ? dir.value.trim() : ""));
+    openPicker(b.dataset.pick, start);
   });
   btn.onclick = async () => {
     const body = {};
@@ -865,9 +915,81 @@ function bindSettings(set) {
       });
       toast("Settings saved — they apply to new videos.", "ok");
       refreshInfo();
+      refreshMusic();
     } catch (e) { toast(esc(e.message), "bad"); }
     finally { btn.disabled = false; }
   };
+  refreshMusic();
+}
+
+async function refreshMusic() {
+  const sys = $("#sys");
+  if (!sys) return;
+  const dir = sys.querySelector('[data-set="music_dir"]');
+  const countEl = sys.querySelector("[data-music-count]");
+  const value = dir ? dir.value.trim() : "";
+  try {
+    const m = await get("/api/music?dir=" + encodeURIComponent(value));
+    if (countEl) {
+      countEl.textContent = !value ? "Uses the project's music/ folder."
+        : m.exists ? `${m.count} track${m.count === 1 ? "" : "s"} found${m.count ? " — one is picked per video" : " (the folder is empty)"}`
+          : "That folder doesn't exist yet.";
+    }
+    const dl = $("#music-file-list");
+    if (dl) dl.innerHTML = (m.files || []).map(f => `<option value="${esc(f)}"></option>`).join("");
+  } catch { /* server restarting — leave the hint as is */ }
+}
+
+// ------------------------------------------------------------------ folder / file picker
+let PICK = null;
+function joinPath(dir, name) {
+  return /[\\/]$/.test(dir) ? dir + name : dir + (dir.includes("\\") && !dir.includes("/") ? "\\" : "/") + name;
+}
+async function openPicker(mode, start) {
+  PICK = { mode };
+  $("#picker").hidden = false;
+  await loadPicker(start || "");
+}
+async function loadPicker(path) {
+  if (!PICK) return;
+  let data;
+  try { data = await get("/api/browse?path=" + encodeURIComponent(path)); }
+  catch (e) { return toast(esc(e.message), "bad"); }
+  const rows = [];
+  if (data.parent) rows.push(`<button class="picker-row" type="button" data-nav="${esc(data.parent)}">${I.up}<b>Parent folder</b></button>`);
+  if (data.home && data.home !== data.path) rows.push(`<button class="picker-row" type="button" data-nav="${esc(data.home)}">${I.home}<b>Home</b></button>`);
+  (data.dirs || []).forEach(d => rows.push(`<button class="picker-row dir" type="button" data-nav="${esc(joinPath(data.path, d))}">${I.folder}<b>${esc(d)}</b></button>`));
+  if (PICK.mode === "file") (data.files || []).forEach(f => rows.push(`<button class="picker-row" type="button" data-file="${esc(f)}">${I.note}${esc(f)}</button>`));
+  $("#picker").innerHTML = `<div class="picker-bg" data-pk="close"></div>
+    <section class="picker-panel" role="dialog" aria-modal="true" aria-label="Choose a folder">
+      <div class="picker-head"><span class="path" title="${esc(data.path)}">${esc(data.path || "")}</span></div>
+      <div class="picker-list">${rows.join("") || `<div class="picker-empty">${esc(data.error || "Nothing here.")}</div>`}</div>
+      <div class="picker-foot">
+        ${PICK.mode === "dir" ? `<button class="btn primary sm" type="button" data-use>Use this folder</button>` : `<span class="hint">Pick an audio file from the list.</span>`}
+        <button class="btn sm" type="button" data-pk="close">Cancel</button>
+      </div>
+    </section>`;
+}
+function onPickerClick(e) {
+  if (!PICK) return;
+  if (e.target.closest("[data-pk]")) return closePicker();
+  const nav = e.target.closest("[data-nav]");
+  if (nav) return loadPicker(nav.dataset.nav);
+  const file = e.target.closest("[data-file]");
+  if (file) { const mode = PICK.mode, v = joinPath(currentPickerPath(), file.dataset.file); closePicker(); return applyPick(mode, v); }
+  if (e.target.closest("[data-use]")) { const mode = PICK.mode, v = currentPickerPath(); closePicker(); return applyPick(mode, v); }
+}
+const currentPickerPath = () => { const p = $("#picker .picker-head .path"); return p ? p.textContent : ""; };
+function applyPick(mode, value) {
+  const sys = $("#sys");
+  const el = sys && sys.querySelector(`[data-set="${mode === "dir" ? "music_dir" : "music_file"}"]`);
+  if (el) el.value = value;
+  if (mode === "dir") refreshMusic();
+}
+function closePicker() {
+  const p = $("#picker");
+  if (p) { p.hidden = true; p.innerHTML = ""; }
+  PICK = null;
 }
 
 boot();
