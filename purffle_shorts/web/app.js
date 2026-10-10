@@ -48,6 +48,13 @@ const STAGES = [["topic", "Topic"], ["script", "Script"], ["review", "Review"], 
   ["captions", "Captions"], ["render", "Render"], ["check", "Check"], ["upload", "Upload"]];
 const STATUS_CHIP = { uploaded: "ok", scheduled: "blue", rendered: "accent", queued: "", failed: "bad" };
 const KIND_ICON = { make: I.film, draft: I.pen, clip: I.scissors, plan: I.bulb, upload: I.upload, stats: I.chart };
+const SETTING_LABELS = {
+  channel_name: "Channel name", audience: "Audience", watermark: "Watermark", end_cta: "End call-to-action",
+  caption_style: "Caption style", caption_position: "Caption position", caption_max_words: "Max words per caption",
+  caption_uppercase: "Uppercase captions", color_grade: "Colour grade", transition: "Transitions",
+  ken_burns: "Ken Burns motion", progress_bar: "Progress bar", hook_overlay: "Hook overlay",
+  music_volume: "Music volume", music_ducking: "Duck music under voice",
+};
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("purffle." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -780,15 +787,17 @@ async function viewChannel() {
 async function viewSystem() {
   const main = $("#main");
   main.innerHTML = `<div class="page-head"><div><h1>System</h1><p>Setup checks, settings and ways to drive PurffleShorts from other tools.</p></div></div><div id="sys"><div class="empty">Checking your setup…</div></div>`;
-  let checks;
-  try { checks = await get("/api/doctor"); } catch (e) { $("#sys").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  let checks, set;
+  try { [checks, set] = await Promise.all([get("/api/doctor"), get("/api/settings")]); }
+  catch (e) { $("#sys").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   if (S.view !== "system") return;
   const bad = checks.filter(c => c.ok === false).length;
   const mcp = JSON.stringify({ mcpServers: { "purffle-shorts": { command: "purffle-shorts", args: ["mcp"], env: { PURFFLE_HOME: "/path/to/your/purffle/folder" } } } }, null, 2);
   $("#sys").innerHTML = `
   <section class="card"><h2>Setup · ${bad ? `<span class="chip bad">${bad} to fix</span>` : `<span class="chip ok">all good</span>`}</h2>
     <div class="checks">${checks.map(c => `<div class="check"><span class="m ${c.ok === true ? "ok" : c.ok === false ? "bad" : "info"}">${c.ok === true ? "✔" : c.ok === false ? "✘" : "•"}</span><span>${esc(c.label)}</span><span>${esc(c.detail)}</span></div>`).join("")}</div>
-    <p class="hint">Settings live in <span class="mono">.env</span> next to where you started the Studio. Restart it after editing.</p></section>
+    <p class="hint">Settings live in <span class="mono">.env</span>. Appearance &amp; content can be edited below and apply to new videos straight away; edits you make to <span class="mono">.env</span> by hand need a restart.</p></section>
+  ${settingsCard(set)}
   <div class="grid2">
     <section class="card"><h2>Use from Claude & other AI apps (MCP)</h2>
       <p class="muted">Add this to Claude Desktop, Claude Code, Cursor or any MCP client, then ask: “make a 30-second Short about why cats purr”.</p>
@@ -803,6 +812,62 @@ purffle-shorts doctor</pre></section>
   </div>
   <p class="hint">PurffleShorts ${esc(S.info.version)} · <a href="https://github.com/Chamanrajragu/purffle-shorts" target="_blank" rel="noopener">GitHub</a></p>`;
   $("#copy").onclick = async () => { try { await navigator.clipboard.writeText(mcp); toast("Copied.", "ok", 2000); } catch { toast("Select the text and copy it.", "info"); } };
+  bindSettings(set);
+}
+
+function settingsCard(set) {
+  if (!set.can_save) {
+    return `<section class="card"><h2>Settings</h2>
+      <p class="hint">No <span class="mono">.env</span> file was found next to the Studio, so these can only be edited by hand for now.</p></section>`;
+  }
+  const v = set.values || {}, ch = set.choices || {}, fields = set.fields || [];
+  const field = ({ attr, kind }) => {
+    const label = SETTING_LABELS[attr] || attr, val = v[attr];
+    if (kind === "bool") return `<label class="switch"><input type="checkbox" data-set="${attr}"${val ? " checked" : ""}><span>${esc(label)}</span></label>`;
+    if (kind === "choice") return `<div class="field"><label>${esc(label)}</label><select data-set="${attr}">${(ch[attr] || []).map(o => `<option value="${esc(o)}"${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select></div>`;
+    if (kind === "int") return `<div class="field"><label>${esc(label)}</label><input type="number" min="1" max="20" data-set="${attr}" value="${esc(val)}"></div>`;
+    if (kind === "float") return `<div class="field"><label>${esc(label)}<output data-out="${attr}"> ${esc(val)}</output></label><input type="range" min="0" max="1" step="0.02" data-set="${attr}" value="${esc(val)}"></div>`;
+    const hint = attr === "watermark" ? `<p class="hint">Blank uses the channel name; “none” hides it.</p>`
+      : attr === "end_cta" ? `<p class="hint">Blank turns the end call-to-action off.</p>` : "";
+    return `<div class="field"><label>${esc(label)}</label><input type="text" data-set="${attr}" value="${esc(val)}">${hint}</div>`;
+  };
+  const bools = fields.filter(f => f.kind === "bool"), rest = fields.filter(f => f.kind !== "bool");
+  return `<section class="card"><h2>Settings</h2>
+    <p class="hint">Saved to <span class="mono">${esc(set.env_file)}</span> and applied to new videos right away. Your keys and every other line are left untouched.</p>
+    <div class="grid2">${rest.map(field).join("")}</div>
+    <div class="checks-inline">${bools.map(field).join("")}</div>
+    <div class="actions end"><button class="btn primary" id="set-save" type="button">${I.check}Save settings</button></div>
+  </section>`;
+}
+
+function bindSettings(set) {
+  const btn = $("#set-save"), sys = $("#sys");
+  if (!btn || !sys) return;
+  sys.addEventListener("input", e => {
+    const el = e.target.closest("[data-set]");
+    if (el && el.dataset.set === "music_volume") { const o = sys.querySelector('[data-out="music_volume"]'); if (o) o.textContent = " " + el.value; }
+  });
+  btn.onclick = async () => {
+    const body = {};
+    (set.fields || []).forEach(({ attr, kind }) => {
+      const el = sys.querySelector(`[data-set="${attr}"]`);
+      if (!el) return;
+      body[attr] = kind === "bool" ? el.checked : (kind === "int" || kind === "float") ? +el.value : el.value;
+    });
+    btn.disabled = true;
+    try {
+      const res = await post("/api/settings", body);
+      Object.entries(res.values || {}).forEach(([k, val]) => {
+        const el = sys.querySelector(`[data-set="${k}"]`);
+        if (el) { if (el.type === "checkbox") el.checked = !!val; else el.value = val; }
+        const o = sys.querySelector(`[data-out="${k}"]`);
+        if (o) o.textContent = " " + val;
+      });
+      toast("Settings saved — they apply to new videos.", "ok");
+      refreshInfo();
+    } catch (e) { toast(esc(e.message), "bad"); }
+    finally { btn.disabled = false; }
+  };
 }
 
 boot();

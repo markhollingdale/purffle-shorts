@@ -231,7 +231,8 @@ def cmd_doctor(args, s: Settings) -> int:
 
 def cmd_studio(args, s: Settings) -> int:
     from .studio import serve
-    serve(s, host=args.host, port=args.port, open_browser=not args.no_browser)
+    env_file = load_env(getattr(args, "env_file", None))
+    serve(s, host=args.host, port=args.port, open_browser=not args.no_browser, env_file=env_file)
     return 0
 
 

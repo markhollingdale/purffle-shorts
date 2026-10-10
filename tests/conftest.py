@@ -15,12 +15,19 @@ FONT_CANDIDATES = [
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Tests never see the developer's real keys or .env settings."""
+    """Tests never see the developer's real keys or .env settings, and nothing a test loads leaks out.
+
+    A test that calls ``load_env()`` (e.g. through ``main``) can pick up the developer's real ``.env`` via
+    python-dotenv's fallback search, so the whole environment is snapshotted and restored around each test."""
+    snapshot = dict(os.environ)
     for key in list(os.environ):
         if key.endswith("_API_KEY") or key.startswith(("LLM_", "ANTHROPIC_", "TTS_", "CAPTION_")) or key in (
                 "OLLAMA_HOST", "UPLOAD", "ASPECT", "RESOLUTION", "TARGET_SECONDS", "SCRIPT_REVIEW", "ALSO_LANGUAGES",
                 "RSS_FEEDS", "NOTIFY_WEBHOOK", "LEARN_FROM_STATS", "PURFFLE_HOME", "KEEP_WORK"):
             monkeypatch.delenv(key, raising=False)
+    yield
+    os.environ.clear()
+    os.environ.update(snapshot)
 
 
 @pytest.fixture

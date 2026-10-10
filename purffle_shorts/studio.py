@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import __version__
-from .config import ASPECTS, Settings, aspect_resolution
+from .config import ASPECTS, Settings, aspect_resolution, load_env
 
 log = logging.getLogger("purffle")
 
@@ -82,9 +82,10 @@ def _choice(value, allowed, default=None):
 
 
 class StudioServer:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, env_file: str | Path | None = None):
         from .pipeline import Studio
         self.settings = settings
+        self.env_file = Path(env_file) if env_file else None
         self.studio = Studio(settings)
         self.token = secrets.token_urlsafe(24)
         self.jobs: dict[int, Job] = {}
@@ -327,6 +328,67 @@ class StudioServer:
                 "tts": ["edge", "openai", "elevenlabs", "kokoro", "coqui", "system"],
                 "visuals": ["pexels", "pixabay", "local", "pollinations", "openai-images"]}
 
+    def settings_values(self) -> dict:
+        """Current values of the Studio-editable settings, plus the field list and allowed choices."""
+        from .config import EDITABLE, editable_values
+        return {
+            "values": editable_values(self.settings),
+            "choices": self._editable_choices(),
+            "fields": [{"attr": a, "env": e, "kind": k} for a, e, k in EDITABLE],
+            "env_file": str(self.env_file) if self.env_file else "",
+            "can_save": bool(self.env_file),
+        }
+
+    def _editable_choices(self) -> dict:
+        from .overlays import CAPTION_STYLES
+        from .render import GRADES, TRANSITIONS
+        return {"caption_style": list(CAPTION_STYLES), "caption_position": ["upper", "center", "lower"],
+                "color_grade": list(GRADES), "transition": ["random", "none", *TRANSITIONS]}
+
+    def save_settings(self, p: dict) -> dict:
+        """Validate the posted settings, write ONLY those keys to .env and reload them live.
+
+        Secrets and every other line in .env are left untouched. Raises ValueError on bad input."""
+        from .config import EDITABLE, format_env_value, save_env
+        if not self.env_file:
+            raise ValueError("No .env file is being used, so there is nothing to write to — edit .env by hand.")
+        choices = self._editable_choices()
+        changes: dict[str, str] = {}
+        for attr, env, kind in EDITABLE:
+            if attr not in p:
+                continue
+            raw = p[attr]
+            if kind == "bool":
+                val = raw if isinstance(raw, bool) else str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+            elif kind == "int":
+                try:
+                    val = int(raw)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{attr} must be a whole number") from None
+                if attr == "caption_max_words":
+                    val = max(1, min(20, val))
+            elif kind == "float":
+                try:
+                    val = max(0.0, min(1.0, float(raw)))
+                except (TypeError, ValueError):
+                    raise ValueError(f"{attr} must be a number") from None
+            elif kind == "choice":
+                val = str(raw)
+                if val not in choices[attr]:
+                    raise ValueError(f"{attr}: choose one of {', '.join(choices[attr])}")
+            else:
+                val = str(raw).strip()
+                if "\n" in val or "\r" in val:
+                    raise ValueError(f"{attr} must be a single line")
+                val = val[:200]
+            changes[env] = format_env_value(val)
+        if changes:
+            save_env(changes, self.env_file)
+            load_env(str(self.env_file))            # refresh os.environ from the file we just wrote
+            self.settings = Settings.from_env()     # then reload so the CLI/MCP and new jobs all agree
+            self.studio.s = self.settings
+        return self.settings_values()
+
     def channel(self) -> dict:
         rows = [r for r in self.studio.history.recent(1000) if r.get("views") is not None]
         by_style: dict[str, list[int]] = {}
@@ -398,6 +460,8 @@ def _handler(app: StudioServer, bound_host: str):
                 return self._json(app.info())
             if path == "/api/options":
                 return self._json(app.options())
+            if path == "/api/settings":
+                return self._json(app.settings_values())
             if path == "/api/videos":
                 return self._json(app.videos(params.get("status", ""), params.get("q", "")))
             m = re.fullmatch(r"/api/videos/(\d+)", path)
@@ -487,6 +551,11 @@ def _handler(app: StudioServer, bound_host: str):
                 return self._json({"error": "expected an object"}, 400)
             path = self.path
             h = app.studio.history
+            if path == "/api/settings":
+                try:
+                    return self._json(app.save_settings(body))
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 400)
             if path in ("/api/make", "/api/draft"):
                 kind = "make" if path == "/api/make" else "draft"
                 label = (body.get("script") or {}).get("title") if isinstance(body.get("script"), dict) else None
@@ -532,8 +601,9 @@ def _handler(app: StudioServer, bound_host: str):
     return H
 
 
-def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
-    app = StudioServer(settings)
+def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
+          env_file: str | Path | None = None) -> None:
+    app = StudioServer(settings, env_file=env_file)
     httpd = ThreadingHTTPServer((host, port), _handler(app, host))
     url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}/"
     log.info("PurffleShorts Studio running at %s  (Ctrl+C to stop)", url)

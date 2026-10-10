@@ -7,6 +7,7 @@ SHORTS_CAPTION_FONTSIZE, SHORTS_BATCH_SIZE, SHORTS_BATCH_DELAY, GOOGLE_CLIENT_SE
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
@@ -334,17 +335,85 @@ class Settings:
         return s
 
 
-def load_env(env_file: str | None = None) -> None:
-    """Load .env (or a named profile file) without overriding variables already set in the shell."""
+def load_env(env_file: str | None = None) -> Path | None:
+    """Load .env (or a named profile file) without overriding variables already set in the shell.
+
+    Returns the file that was loaded, so callers (the Studio) can write edited settings back to it."""
     try:
         from dotenv import find_dotenv, load_dotenv
     except ImportError:  # pragma: no cover - python-dotenv is a hard dependency
-        return
+        return None
     if env_file:
         load_dotenv(env_file, override=True)
-        return
+        return Path(env_file)
     # The .env in the folder you run from (or PURFFLE_HOME). Plain load_dotenv() searches upwards from the
     # package's own folder, which never reaches your folder once the package is installed with pip or uvx.
     path = find_dotenv(usecwd=True) or find_dotenv()
     if path:
         load_dotenv(path)
+        return Path(path)
+    return None
+
+
+# Settings the Studio lets you edit, as (attribute, ENV variable, kind). kind: str|bool|int|float|choice.
+# Secrets and anything not listed here are never read into the form or written back to .env.
+EDITABLE: list[tuple[str, str, str]] = [
+    ("channel_name", "CHANNEL_NAME", "str"),
+    ("audience", "AUDIENCE", "str"),
+    ("watermark", "WATERMARK", "str"),
+    ("end_cta", "END_CTA", "str"),
+    ("caption_style", "CAPTION_STYLE", "choice"),
+    ("caption_position", "CAPTION_POSITION", "choice"),
+    ("caption_max_words", "CAPTION_MAX_WORDS", "int"),
+    ("caption_uppercase", "CAPTION_UPPERCASE", "bool"),
+    ("color_grade", "COLOR_GRADE", "choice"),
+    ("transition", "TRANSITION", "choice"),
+    ("ken_burns", "KEN_BURNS", "bool"),
+    ("progress_bar", "PROGRESS_BAR", "bool"),
+    ("hook_overlay", "HOOK_OVERLAY", "bool"),
+    ("music_volume", "MUSIC_VOLUME", "float"),
+    ("music_ducking", "MUSIC_DUCKING", "bool"),
+]
+
+
+def format_env_value(value) -> str:
+    """Render a setting the way it is written in .env (bools as true/false, numbers plain)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def editable_values(s: Settings) -> dict:
+    """The current value of every Studio-editable setting, keyed by attribute name."""
+    return {attr: getattr(s, attr) for attr, _env, _kind in EDITABLE}
+
+
+def save_env(changes: dict[str, str], env_file: str | Path) -> Path:
+    """Write values for specific keys in an .env file, leaving every other line byte-for-byte.
+
+    Only the given keys are touched (comments, blank lines, ordering and secret values are preserved);
+    keys that are missing are appended under a marker. The write is atomic (temp file + replace)."""
+    path = Path(env_file)
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = ""
+    lines = existing.splitlines()
+    remaining = dict(changes)
+    out: list[str] = []
+    for line in lines:
+        m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=", line)
+        if m and m.group(1) in remaining:
+            out.append(f"{m.group(1)}={remaining.pop(m.group(1))}")
+        else:
+            out.append(line)
+    if remaining:
+        if out and out[-1].strip():
+            out.append("")
+        if "# ── Studio settings ──" not in existing:
+            out.append("# ── Studio settings ──")
+        out += [f"{key}={value}" for key, value in remaining.items()]
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return path

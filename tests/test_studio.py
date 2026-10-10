@@ -3,6 +3,7 @@
 import http.client
 import json
 import logging
+import os
 import threading
 import time
 from http.server import ThreadingHTTPServer
@@ -11,10 +12,17 @@ import pytest
 
 from purffle_shorts import studio as ST
 
+SETTINGS_ENV = ("CHANNEL_NAME", "WATERMARK", "END_CTA", "CAPTION_MAX_WORDS", "KEN_BURNS", "MUSIC_VOLUME")
+
 
 @pytest.fixture
-def server(settings):
-    app = ST.StudioServer(settings.with_overrides(upload=False))
+def server(settings, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "CHANNEL_NAME=TestChannel\nWATERMARK=\nEND_CTA=Follow for more!\n"
+        "CAPTION_MAX_WORDS=3\nKEN_BURNS=true\nMUSIC_VOLUME=0.14\n",
+        encoding="utf-8")
+    app = ST.StudioServer(settings.with_overrides(upload=False), env_file=env_file)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), ST._handler(app, "127.0.0.1"))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield app, httpd.server_address[1]
@@ -23,6 +31,8 @@ def server(settings):
     root = logging.getLogger()
     for h in [h for h in root.handlers if isinstance(h, ST._JobLog)]:
         root.removeHandler(h)
+    for key in SETTINGS_ENV:  # save_settings reloads from os.environ: don't leak into other tests
+        os.environ.pop(key, None)
 
 
 def req(port, method, path, body=None, token=None, host=None):
@@ -96,3 +106,42 @@ def test_offline_draft_job_runs_to_completion(server):
     assert job["status"] == "done", job
     assert job["result"]["script"]["style"] == "chat" and job["pct"] == 100
     assert job["label"] == "Demo video"
+
+
+def test_settings_get_shape(server):
+    app, port = server
+    data = json.loads(req(port, "GET", "/api/settings")[2])
+    assert data["can_save"] is True and data["env_file"] == str(app.env_file)
+    assert {f["attr"] for f in data["fields"]} >= {"watermark", "end_cta", "caption_style", "music_volume"}
+    assert "bold" in data["choices"]["caption_style"] and "cinematic" in data["choices"]["color_grade"]
+
+
+def test_settings_save_writes_env_and_reloads(server):
+    app, port = server
+    assert req(port, "POST", "/api/settings", {"watermark": "none"})[0] == 403  # token required
+    status, _, body = req(port, "POST", "/api/settings",
+                          {"watermark": "none", "end_cta": "Subscribe!", "caption_style": "karaoke",
+                           "unknown_key": "ignored"}, app.token)
+    assert status == 200
+    res = json.loads(body)
+    assert res["values"]["watermark"] == "none" and res["values"]["end_cta"] == "Subscribe!"
+    assert res["values"]["caption_style"] == "karaoke"
+    assert app.settings.watermark == "none" and app.settings.end_cta == "Subscribe!"
+    text = app.env_file.read_text(encoding="utf-8")
+    assert "WATERMARK=none" in text and "END_CTA=Subscribe!" in text and "CHANNEL_NAME=TestChannel" in text
+
+
+def test_settings_rejects_bad_values(server):
+    app, port = server
+    assert req(port, "POST", "/api/settings", {"caption_style": "<script>"}, app.token)[0] == 400
+    assert req(port, "POST", "/api/settings", {"caption_max_words": "lots"}, app.token)[0] == 400
+    assert req(port, "POST", "/api/settings", {"end_cta": "one\ntwo"}, app.token)[0] == 400
+    # nothing was written by the rejected requests
+    assert "WATERMARK=none" not in app.env_file.read_text(encoding="utf-8")
+
+
+def test_settings_clamps_numbers(server):
+    app, port = server
+    res = json.loads(req(port, "POST", "/api/settings",
+                         {"caption_max_words": 999, "music_volume": 5}, app.token)[2])
+    assert res["values"]["caption_max_words"] == 20 and res["values"]["music_volume"] == 1.0
