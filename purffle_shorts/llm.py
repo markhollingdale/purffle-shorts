@@ -11,13 +11,19 @@ import json
 import logging
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from . import __version__
 from .config import Settings
 from .utils import PermanentError, http, raise_for_status, with_retries
 
 log = logging.getLogger("purffle")
+
+# OpenCode Go needs a stable per-conversation session id in `x-opencode-session` so its router can
+# route and cache the request; without it every call is rejected with HTTP 400 MissingSessionID.
+_SESSION_ID = uuid.uuid4().hex
 
 
 class LLMError(RuntimeError):
@@ -189,6 +195,9 @@ class OpenAICompatible(Provider):
         if self.name == "openrouter":
             headers["HTTP-Referer"] = "https://github.com/Chamanrajragu/purffle-shorts"
             headers["X-Title"] = "PurffleShorts"
+        if "opencode.ai" in self.base_url:
+            headers["x-opencode-session"] = _SESSION_ID
+            headers["User-Agent"] = f"purffle-shorts/{__version__}"
         try:
             r = http().post(f"{self.base_url}/chat/completions", json=payload, headers=headers, timeout=180)
             raise_for_status(r, f"{self}")
