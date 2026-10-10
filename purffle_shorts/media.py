@@ -22,6 +22,7 @@ log = logging.getLogger("purffle")
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 STOP_WORDS = {"the", "a", "an", "of", "and", "in", "on", "with", "for", "to", "at", "by", "from", "closeup"}
+AI_SOURCES = {"openai-images", "ai", "dalle", "gpt-image", "pollinations"}
 
 
 @dataclass
@@ -45,6 +46,27 @@ class MediaItem:
     @property
     def portrait(self) -> bool:
         return self.height > self.width
+
+    @property
+    def thumb(self) -> str:
+        """A small preview image URL (or the image itself), if the source gave us one."""
+        return self.extra.get("thumb", "") or (self.url if self.kind == "image" else "")
+
+    def to_dict(self) -> dict:
+        """A serialisable record so a scene's pick can be shown, re-fetched or re-used later."""
+        return {"source": self.source, "id": self.id, "kind": self.kind, "url": self.url,
+                "width": self.width, "height": self.height, "duration": round(self.duration, 2),
+                "credit": self.credit, "query": self.query, "thumb": self.thumb}
+
+    @classmethod
+    def from_dict(cls, d: dict, path: Path | None = None) -> MediaItem:
+        item = cls(str(d.get("source") or ""), str(d.get("id") or ""), str(d.get("kind") or "image"),
+                   url=str(d.get("url") or ""), width=int(d.get("width") or 0), height=int(d.get("height") or 0),
+                   duration=float(d.get("duration") or 0), credit=str(d.get("credit") or ""),
+                   query=str(d.get("query") or ""), path=path)
+        if d.get("thumb"):
+            item.extra["thumb"] = str(d["thumb"])
+        return item
 
 
 # ------------------------------------------------------------------------------------------ Pexels
@@ -75,7 +97,8 @@ def pexels_videos(query: str, key: str, prefer_4k: bool = False, orientation: st
         if not f:
             continue
         items.append(MediaItem("pexels", str(v["id"]), "video", f["link"], f["width"], f["height"],
-                               float(v.get("duration") or 0), (v.get("user") or {}).get("name", ""), query=query))
+                               float(v.get("duration") or 0), (v.get("user") or {}).get("name", ""), query=query,
+                               extra={"thumb": v.get("image", "")}))
     return items
 
 
@@ -93,7 +116,8 @@ def pexels_photos(query: str, key: str, orientation: str = "portrait") -> list[M
             continue
         url += ("&" if "?" in url else "?") + "auto=compress&cs=tinysrgb&h=2400"
         items.append(MediaItem("pexels-photo", str(p["id"]), "image", url, p.get("width", 0), p.get("height", 0),
-                               credit=p.get("photographer", ""), query=query))
+                               credit=p.get("photographer", ""), query=query,
+                               extra={"thumb": src.get("medium") or src.get("small") or url}))
     return items
 
 
@@ -121,7 +145,8 @@ def pixabay_photos(query: str, key: str, orientation: str = "portrait") -> list[
         "per_page": 20, "safesearch": "true"})
     raise_for_status(r, "Pixabay photo search")
     return [MediaItem("pixabay-photo", str(h["id"]), "image", h["largeImageURL"], h.get("imageWidth", 0),
-                      h.get("imageHeight", 0), credit=h.get("user", ""), query=query)
+                      h.get("imageHeight", 0), credit=h.get("user", ""), query=query,
+                      extra={"thumb": h.get("webformatURL") or h.get("previewURL") or h["largeImageURL"]})
             for h in r.json().get("hits", []) if h.get("largeImageURL")]
 
 
@@ -266,6 +291,27 @@ class Visuals:
         item.path = download(item.url, dest_dir / f"scene{idx:02d}_{item.source}_{item.id}{ext}")
         return item
 
+    def fetch(self, item: MediaItem, dest_dir: Path, idx: int) -> MediaItem:
+        """Download (or, for local files, keep) one item — used when a scene's pick is changed."""
+        return self._fetch(item, dest_dir, idx)
+
+    def candidates(self, query: str, limit: int = 30) -> list[MediaItem]:
+        """Stock/photo (and local) candidates for a query, ranked, without downloading anything.
+
+        AI-image sources are skipped: they can't be 'picked' from a list, they are generated."""
+        out: list[MediaItem] = []
+        seen: set[str] = set()
+        for source in list(self.sources):
+            if source in AI_SOURCES:
+                continue
+            for it in self._search(source, query):
+                if it.key in seen:
+                    continue
+                seen.add(it.key)
+                out.append(it)
+        out.sort(key=lambda c: _score(c, 0.0, self.s.orientation), reverse=True)
+        return out[:limit]
+
     def _ai(self, source: str, prompt: str, dest_dir: Path, idx: int) -> MediaItem | None:
         s = self.s
         full = f"{prompt}. {s.visual_style}. No text, no letters, no watermark."
@@ -302,7 +348,7 @@ class Visuals:
             if q and q.lower() not in [x.lower() for x in queries]:
                 queries.append(q)
         for source in list(self.sources):
-            if source in ("openai-images", "ai", "dalle", "gpt-image", "pollinations"):
+            if source in AI_SOURCES:
                 item = self._ai(source, image_prompt or query, dest_dir, idx)
                 if item:
                     return item

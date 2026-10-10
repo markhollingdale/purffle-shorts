@@ -85,6 +85,7 @@ It is made for **content creators**, **faceless YouTube channels**, **educators*
 - A separate stock-footage search for every scene (Pexels, Pixabay), portrait clips preferred, smart 9:16 crop, never reused across videos.
 - AI images per scene from OpenAI (gpt-image-1 / DALL·E 3) or Pollinations, or your own `media/` folder.
 - Ken Burns motion on photos, colour grades, transitions.
+- **Fix a bad clip without re-doing the video:** every render keeps its chosen footage (a `footage/` folder plus a `media.json` manifest with each pick's source, id, link and query). In the Library, open a video and swap any scene — pick another result from a fresh stock search, or drop in your own image/video — then re-render; the script, voice timing and every other scene are reused, and the video is updated in place.
 
 **Captions & editing**
 - Captions appear exactly when each word is spoken, with the current word highlighted. 6 styles; Latin, Indic, Arabic, Thai and CJK scripts.
@@ -464,7 +465,8 @@ python -m purffle_shorts studio        # opens http://127.0.0.1:8765
 - **Create:** topic, web page, idea queue or "surprise me"; eleven formats; language, length, aspect, voices, caption style (with a preview), grade, transitions, footage sources, model, Script Doctor mode, extra languages, upload.
 - **Draft, then edit:** the AI writes and reviews the script, you see the retention score and the problems it found, change any line, reorder or add scenes, switch speakers, then render exactly that script.
 - **Live progress** through topic, script, review, voice, footage, captions, render and upload, with the log.
-- **Library:** thumbnails with status, format, language and score; open one to play it, download the MP4 or captions, upload it, edit and re-render it, or delete it.
+- **Library:** thumbnails with status, format, language and score; open one to play it, download the MP4 or captions, upload it, edit and re-render it, swap a scene's footage (see below), or delete it.
+- **Footage:** open a video and every scene appears with its current clip; **Replace** searches Pexels/Pixabay for a better one, **Use my file** takes an image or video from your computer, and **Re-render** rebuilds the video in place using the saved script and all the other scenes.
 - **Ideas, Clip, Channel and System** pages: plan and queue ideas, clip long videos, see views per video and per format, run the setup checks and copy the MCP config.
 - **Settings in the System page:** edit the look and content defaults — watermark, end call-to-action, channel name, caption style and words, colour grade, transitions, and the music folder, fallback track and volume (with a built-in folder/file browser that shows how many tracks it found) — without opening `.env`. The Studio writes only those keys back to `.env` (keys, credentials and comments are untouched) and applies them to new videos right away.
 

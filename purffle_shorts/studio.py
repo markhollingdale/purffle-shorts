@@ -82,6 +82,10 @@ def _choice(value, allowed, default=None):
     return value if value in allowed else default
 
 
+def _safe(text: str) -> str:
+    return re.sub(r"[^\w.-]", "_", str(text)) or "item"
+
+
 class StudioServer:
     def __init__(self, settings: Settings, env_file: str | Path | None = None):
         from .pipeline import Studio
@@ -221,6 +225,10 @@ class StudioServer:
                                  min_seconds=int(p.get("min_seconds") or 20), max_seconds=int(p.get("max_seconds") or 58))
             job.result = {"clips": [_result(r) for r in results]}
             return any(r.ok for r in results)
+        if job.kind == "render":
+            r = studio.rerender(int(p["id"]), upload=bool(p.get("upload")))
+            job.result = _result(r)
+            return r.ok
         # make
         script = script_from_data(p["script"], s) if isinstance(p.get("script"), dict) else None
         langs = p.get("also_langs")
@@ -431,6 +439,109 @@ class StudioServer:
         return {"path": str(p), "parent": str(p.parent) if p.parent != p else "",
                 "home": str(home) if home.is_dir() else "", "dirs": dirs, "files": files, "error": error}
 
+    # ------------------------------------------------------------------ per-scene footage
+    def _rec_folder(self, vid: int) -> Path | None:
+        rec = self.studio.history.get(vid)
+        return Path(rec["folder"]) if rec and rec.get("folder") else None
+
+    def scenes(self, vid: int) -> dict | None:
+        """Every scene with its narration, search query and current footage, for the video drawer."""
+        from .media import AI_SOURCES
+        rec = self.studio.history.get(vid)
+        folder = self._rec_folder(vid)
+        if rec is None or folder is None:
+            return None
+        try:
+            script = json.loads((folder / "script.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            script = {}
+        media_map = self.studio._load_media_map(folder)
+        out = []
+        for n, sc in enumerate(script.get("scenes") or []):
+            m = media_map.get(n)
+            entry = m.to_dict() if m else None
+            out.append({"index": n, "narration": sc.get("narration", ""), "search_query": sc.get("search_query", ""),
+                        "image_prompt": sc.get("image_prompt", ""), "media": entry,
+                        "preview": bool(m and m.path), "kind": m.kind if m else ""})
+        return {"id": vid, "title": rec.get("title"), "scenes": out,
+                "sources": [s for s in self.settings.visual_sources if s not in AI_SOURCES]}
+
+    def media_file_for(self, vid: int, n: int) -> Path | None:
+        folder = self._rec_folder(vid)
+        if folder is None:
+            return None
+        m = self.studio._load_media_map(folder).get(n)
+        return m.path if m and m.path and m.path.exists() else None
+
+    def scene_search(self, vid: int, n: int, query: str) -> dict:
+        """Fresh stock candidates for a scene — returned as links, nothing is downloaded yet."""
+        from .media import Visuals
+        if self._rec_folder(vid) is None:
+            raise ValueError("no such video")
+        q = (query or "").strip()
+        if not q:
+            raise ValueError("give a search query")
+        cands = Visuals(self.settings, used_keys=set()).candidates(q)
+        return {"query": q, "candidates": [{**c.to_dict(), "local": c.source == "local",
+                                            "path": str(c.path) if c.source == "local" and c.path else ""}
+                                           for c in cands]}
+
+    def scene_pick(self, vid: int, n: int, item: dict) -> dict:
+        """Download one candidate (or take a local file) and make it this scene's footage."""
+        from .media import MediaItem, Visuals
+        folder = self._rec_folder(vid)
+        if folder is None:
+            raise ValueError("no such video")
+        if n < 0 or not isinstance(item, dict):
+            raise ValueError("bad candidate")
+        if item.get("local") or item.get("source") == "local":
+            src = Path(str(item.get("path") or item.get("url") or ""))
+            if not src.is_file():
+                raise ValueError("local file not found")
+            mi = MediaItem.from_dict(item, path=src)
+        else:
+            mi = MediaItem.from_dict(item)
+            if not mi.url:
+                raise ValueError("candidate has no url")
+            work = folder / "work" / "pick"
+            work.mkdir(parents=True, exist_ok=True)
+            Visuals(self.settings, used_keys=set()).fetch(mi, work, n)
+        return {"media": self._store_scene(folder, n, mi)}
+
+    def scene_manual(self, vid: int, n: int, path: str) -> dict:
+        """Copy a file from your own computer into the video and use it for this scene."""
+        from .media import IMAGE_EXT, VIDEO_EXT, MediaItem
+        folder = self._rec_folder(vid)
+        if folder is None:
+            raise ValueError("no such video")
+        src = Path(str(path or "").strip())
+        if not src.is_file():
+            raise ValueError("file not found")
+        if src.suffix.lower() not in VIDEO_EXT | IMAGE_EXT:
+            raise ValueError("that's not an image or video file")
+        mi = MediaItem("manual", src.name, "video" if src.suffix.lower() in VIDEO_EXT else "image", path=src)
+        return {"media": self._store_scene(folder, n, mi)}
+
+    def _store_scene(self, folder: Path, n: int, item) -> dict:
+        import shutil
+        dest = folder / "footage"
+        dest.mkdir(exist_ok=True)
+        ext = item.path.suffix or (".mp4" if item.kind == "video" else ".jpg")
+        target = dest / f"scene{n:02d}_{_safe(item.source)}_{_safe(Path(item.id).stem)}{ext}"
+        if item.path.resolve() != target.resolve():
+            shutil.copy2(item.path, target)
+        item.path = target
+        entry = item.to_dict()
+        entry["file"] = str(target.relative_to(folder))
+        manifest = folder / "media.json"
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
+        except (OSError, ValueError):
+            data = {}
+        data.setdefault("scenes", {})[str(n)] = entry
+        manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        return entry
+
     def channel(self) -> dict:
         rows = [r for r in self.studio.history.recent(1000) if r.get("views") is not None]
         by_style: dict[str, list[int]] = {}
@@ -492,7 +603,8 @@ def _handler(app: StudioServer, bound_host: str):
                 html = (WEB / "index.html").read_text(encoding="utf-8")
                 html = html.replace("__TOKEN__", app.token).replace("__VERSION__", __version__)
                 return self._send(200, html.encode(), "text/html; charset=utf-8", {
-                    "Content-Security-Policy": "default-src 'self'; img-src 'self' data: https://i.ytimg.com; "
+                    "Content-Security-Policy": "default-src 'self'; img-src 'self' data: https://i.ytimg.com "
+                                               "https://images.pexels.com https://cdn.pixabay.com https://pixabay.com; "
                                                "media-src 'self'; connect-src 'self'; frame-ancestors 'none'",
                     "X-Frame-Options": "DENY"})
             m = re.fullmatch(r"/static/([\w.-]+)", path)
@@ -514,6 +626,14 @@ def _handler(app: StudioServer, bound_host: str):
             if m:
                 v = app.video(int(m.group(1)))
                 return self._json(v) if v else self._json({"error": "not found"}, 404)
+            m = re.fullmatch(r"/api/videos/(\d+)/scenes", path)
+            if m:
+                data = app.scenes(int(m.group(1)))
+                return self._json(data) if data else self._json({"error": "not found"}, 404)
+            m = re.fullmatch(r"/media/(\d+)/(\d+)", path)
+            if m:
+                f = app.media_file_for(int(m.group(1)), int(m.group(2)))
+                return self._file(f) if f else self._send(404, b"not found", "text/plain")
             if path == "/api/jobs":
                 jobs = sorted(app.jobs.values(), key=lambda j: j.id, reverse=True)[:40]
                 return self._json([j.public() for j in jobs])
@@ -636,6 +756,30 @@ def _handler(app: StudioServer, bound_host: str):
                 rec = h.get(int(m.group(1)))
                 label = f"Upload: {rec['title']}" if rec else f"Upload #{m.group(1)}"
                 return self._json({"job": app.submit("upload", {"id": int(m.group(1))}, label).id})
+            m = re.fullmatch(r"/api/videos/(\d+)/scenes/(\d+)/search", path)
+            if m:
+                try:
+                    return self._json(app.scene_search(int(m.group(1)), int(m.group(2)), str(body.get("query") or "")))
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 400)
+            m = re.fullmatch(r"/api/videos/(\d+)/scenes/(\d+)/pick", path)
+            if m:
+                try:
+                    return self._json(app.scene_pick(int(m.group(1)), int(m.group(2)), body.get("item") or body))
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 400)
+            m = re.fullmatch(r"/api/videos/(\d+)/scenes/(\d+)/manual", path)
+            if m:
+                try:
+                    return self._json(app.scene_manual(int(m.group(1)), int(m.group(2)), str(body.get("path") or "")))
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 400)
+            m = re.fullmatch(r"/api/videos/(\d+)/render", path)
+            if m:
+                rec = h.get(int(m.group(1)))
+                label = f"Re-render: {rec['title']}" if rec else f"Re-render #{m.group(1)}"
+                return self._json({"job": app.submit("render", {"id": int(m.group(1)),
+                                                                "upload": bool(body.get("upload"))}, label).id})
             m = re.fullmatch(r"/api/videos/(\d+)/delete", path)
             if m:
                 return self._json({"ok": app.studio.delete(int(m.group(1)))})

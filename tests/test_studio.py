@@ -173,6 +173,36 @@ def test_music_lookup_and_save(server, tmp_path):
     assert "MUSIC_FILE=two.wav" in text and "MUSIC_DIR=" in text
 
 
+def test_scenes_and_manual_footage(server, tmp_path):
+    app, port = server
+    folder = tmp_path / "vid1"
+    folder.mkdir()
+    (folder / "short.mp4").write_bytes(b"x")
+    (folder / "script.json").write_text(json.dumps({
+        "title": "T", "scenes": [{"narration": "hello world", "search_query": "cats", "image_prompt": "a cat"}]}),
+        encoding="utf-8")
+    vid = app.studio.history.add_video(title="T", status="rendered", folder=str(folder),
+                                       video_path=str(folder / "short.mp4"))
+    data = json.loads(req(port, "GET", f"/api/videos/{vid}/scenes")[2])
+    assert data["scenes"][0]["index"] == 0 and data["scenes"][0]["media"] is None
+    assert req(port, "GET", f"/api/videos/{vid}/scenes")[0] == 200
+    # a candidate search with no keys configured returns an empty list, not an error
+    assert "candidates" in json.loads(req(port, "POST", f"/api/videos/{vid}/scenes/0/search", {"query": "cats"}, app.token)[2])
+    # manual pick copies a file into footage/ and records it
+    img = tmp_path / "mine.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    status, _, body = req(port, "POST", f"/api/videos/{vid}/scenes/0/manual", {"path": str(img)}, app.token)
+    assert status == 200
+    entry = json.loads(body)["media"]
+    assert entry["source"] == "manual" and (folder / entry["file"]).exists()
+    assert entry["file"].startswith("footage")
+    assert (folder / "media.json").exists()
+    assert json.loads(req(port, "GET", f"/api/videos/{vid}/scenes")[2])["scenes"][0]["media"]["source"] == "manual"
+    assert req(port, "GET", f"/media/{vid}/0")[0] == 200
+    assert req(port, "POST", f"/api/videos/{vid}/scenes/0/manual", {"path": "nope.mp4"}, app.token)[0] == 400
+    assert "job" in json.loads(req(port, "POST", f"/api/videos/{vid}/render", {}, app.token)[2])
+
+
 def test_browse_lists_dirs_and_audio_files(server, tmp_path):
     app, port = server
     root = tmp_path / "lib"

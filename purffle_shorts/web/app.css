@@ -226,6 +226,27 @@ details.more > summary + * { margin-top: 12px; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
 .desc { white-space: pre-wrap; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; max-height: 180px; overflow: auto; }
 
+/* per-scene footage editor */
+.drawer-wide { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 18px; }
+.drawer-wide h2 { margin-top: 0; }
+.shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 12px; }
+.shot { display: grid; grid-template-columns: 82px 1fr; gap: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 10px; background: var(--bg); }
+.shot-thumb { width: 82px; aspect-ratio: 9 / 16; border-radius: 9px; overflow: hidden; background: #07080b; display: grid; place-items: center; }
+.shot-thumb img, .shot-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.shot-thumb .ph { color: var(--faint); font-size: 11px; text-align: center; padding: 4px; }
+.shot-body { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.shot-head { display: flex; align-items: center; gap: 8px; }
+.shot-body small { color: var(--muted); font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.cand-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(134px, 1fr)); gap: 10px; margin-top: 12px; }
+.cand { border: 1px solid var(--line); border-radius: 11px; overflow: hidden; background: var(--bg); cursor: pointer; padding: 0; text-align: left;
+  display: flex; flex-direction: column; transition: border-color .15s; }
+.cand:hover { border-color: var(--accent); }
+.cand-thumb { aspect-ratio: 9 / 16; background: #07080b; overflow: hidden; display: grid; place-items: center; }
+.cand-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cand-thumb .ph { color: var(--faint); font-size: 12px; }
+.cand-meta { padding: 7px 9px; display: flex; flex-direction: column; gap: 2px; }
+.cand-meta small { color: var(--muted); font-size: 11.5px; }
+
 /* ---------- queue ---------- */
 .jobs { display: flex; flex-direction: column; gap: 12px; }
 .job { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; }

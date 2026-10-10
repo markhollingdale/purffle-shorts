@@ -30,6 +30,7 @@ const I = {
   folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   note: '<svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>',
   home: '<svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7"/><path d="M6 10v9h12v-9"/></svg>',
+  search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>',
 };
 
 const FORMATS = [
@@ -50,7 +51,8 @@ const MULTI = new Set(["dialogue", "chat"]);
 const STAGES = [["topic", "Topic"], ["script", "Script"], ["review", "Review"], ["voice", "Voice"], ["footage", "Footage"],
   ["captions", "Captions"], ["render", "Render"], ["check", "Check"], ["upload", "Upload"]];
 const STATUS_CHIP = { uploaded: "ok", scheduled: "blue", rendered: "accent", queued: "", failed: "bad" };
-const KIND_ICON = { make: I.film, draft: I.pen, clip: I.scissors, plan: I.bulb, upload: I.upload, stats: I.chart };
+const KIND_ICON = { make: I.film, draft: I.pen, clip: I.scissors, plan: I.bulb, upload: I.upload, stats: I.chart,
+  render: I.refresh };
 const SETTING_INFO = {
   channel_name: ["Channel name", "Used as the default watermark and for your branding."],
   audience: ["Audience", "Who the videos are for — guides the AI's tone and examples."],
@@ -611,10 +613,13 @@ async function openVideo(id) {
       </dl>
       ${v.description ? `<div class="desc">${esc(v.description)}</div>` : ""}
       ${v.tags && v.tags.length ? `<div class="chips">${v.tags.map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
-    </div>`;
+    </div>
+    ${sc ? `<div class="drawer-wide" id="d-footage"></div>` : ""}`;
   paint(panel);
   $("#drawer").hidden = false;
   document.body.style.overflow = "hidden";
+  const foot = $("#d-footage");
+  if (foot) { bindFootage(foot, id); loadFootage(id); }
   const up = $("#d-up");
   if (up) up.onclick = async () => { up.disabled = true; try { await post("/api/upload/" + id); toast("Upload queued — follow it in Queue.", "info"); tick(); } catch (e) { toast(esc(e.message), "bad"); } };
   const ed = $("#d-edit");
@@ -639,6 +644,112 @@ function closeDrawer() {
   $$("video", d).forEach(v => v.pause());
   d.hidden = true;
   document.body.style.overflow = "";
+}
+
+// ------------------------------------------------------------------ FOOTAGE (per scene)
+let FOOT = { vid: 0, n: 0, query: "", cands: [] };
+async function loadFootage(vid) {
+  const box = $("#d-footage");
+  if (!box) return;
+  let data;
+  try { data = await get(`/api/videos/${vid}/scenes`); }
+  catch (e) { box.innerHTML = `<h2>Footage</h2><p class="hint">${esc(e.message)}</p>`; return; }
+  if (!$("#d-footage")) return;
+  const scenes = data.scenes || [];
+  box.innerHTML = `<h2>Footage</h2>
+    <p class="hint">Not happy with a clip? <b>Replace</b> pulls a fresh one from your visual sources; <b>Use my file</b> takes an image or video from this computer. Then re-render — the rest is kept.</p>
+    ${scenes.length ? `<div class="shots">${scenes.map(s => shotCard(vid, s)).join("")}</div>`
+      : `<div class="empty">This video has no scenes to edit.</div>`}
+    <div class="actions end"><button class="btn primary" type="button" data-rerender="${vid}">${I.refresh}Re-render with this footage</button></div>`;
+}
+function shotCard(vid, s) {
+  const m = s.media || {};
+  const preview = s.preview
+    ? (m.kind === "video"
+      ? `<video src="/media/${vid}/${s.index}" muted playsinline preload="metadata"></video>`
+      : `<img src="/media/${vid}/${s.index}" alt="" loading="lazy">`)
+    : `<div class="ph">${esc(m.source || "no clip")}</div>`;
+  const chip = s.media ? `<span class="chip">${esc(m.source)}${m.kind ? " · " + esc(m.kind) : ""}</span>` : `<span class="chip">none</span>`;
+  return `<div class="shot">
+    <div class="shot-thumb">${preview}</div>
+    <div class="shot-body">
+      <div class="shot-head"><b>Scene ${s.index + 1}</b>${chip}</div>
+      <small>${esc((s.narration || "").slice(0, 150))}</small>
+      <div class="actions">
+        <button class="btn ghost sm" type="button" data-replace="${s.index}" data-q="${esc(s.search_query || "")}">${I.spark}Replace</button>
+        <button class="btn ghost sm" type="button" data-manual="${s.index}">${I.upload}Use my file</button>
+      </div>
+    </div>
+  </div>`;
+}
+function bindFootage(box, vid) {
+  box.onclick = async e => {
+    const rep = e.target.closest("[data-replace]");
+    if (rep) return showCandidates(box, vid, +rep.dataset.replace, rep.dataset.q || "");
+    const man = e.target.closest("[data-manual]");
+    if (man) return manualPick(vid, +man.dataset.manual);
+    const srch = e.target.closest("[data-search]");
+    if (srch) return runCandidateSearch(box, vid);
+    if (e.target.closest("[data-back]")) return loadFootage(vid);
+    const cand = e.target.closest("[data-cand]");
+    if (cand) return pickCandidate(vid, +cand.dataset.cand);
+    const rr = e.target.closest("[data-rerender]");
+    if (rr) {
+      try { await post(`/api/videos/${vid}/render`, {}); toast("Re-rendering in the background — watch Queue.", "info"); tick(); }
+      catch (err) { toast(esc(err.message), "bad"); }
+    }
+  };
+}
+async function showCandidates(box, vid, n, query) {
+  FOOT = { vid, n, query: query || "", cands: [] };
+  box.innerHTML = `<h2>Replace scene ${n + 1}</h2>
+    <div class="field"><label>Footage search</label><div class="with-btn">
+      <input type="text" id="cand-q" value="${esc(query)}" placeholder="e.g. octopus underwater">
+      <button class="btn sm" type="button" data-search="${n}">${I.search}Search</button></div></div>
+    <div id="cand-list" class="cand-list"><div class="empty">Searching…</div></div>
+    <div class="actions end"><button class="btn ghost sm" type="button" data-back="${vid}">Back to scenes</button></div>`;
+  await runCandidateSearch(box, vid);
+}
+async function runCandidateSearch(box, vid) {
+  const qEl = $("#cand-q");
+  FOOT.query = qEl ? qEl.value.trim() : FOOT.query;
+  const list = $("#cand-list");
+  if (list) list.innerHTML = `<div class="empty">Searching…</div>`;
+  try {
+    const res = await post(`/api/videos/${vid}/scenes/${FOOT.n}/search`, { query: FOOT.query });
+    FOOT.cands = res.candidates || [];
+    drawCandidates();
+  } catch (e) { if (list) list.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+function drawCandidates() {
+  const list = $("#cand-list");
+  if (!list) return;
+  if (!FOOT.cands.length) {
+    list.innerHTML = `<div class="empty"><b>No results</b>Try different words, or add a free Pexels/Pixabay key in <a href="#system">System</a>.</div>`;
+    return;
+  }
+  list.innerHTML = FOOT.cands.map((c, i) => `
+    <button class="cand" type="button" data-cand="${i}">
+      <div class="cand-thumb">${c.thumb ? `<img src="${esc(c.thumb)}" alt="" loading="lazy">` : `<div class="ph">${esc(c.kind)}</div>`}</div>
+      <div class="cand-meta"><b>${esc(c.source)}</b><small>${esc(c.kind)}${c.width ? ` · ${c.width}×${c.height}` : ""}${c.duration ? ` · ${Math.round(c.duration)}s` : ""}${c.credit ? ` · ${esc(c.credit)}` : ""}</small></div>
+    </button>`).join("");
+}
+async function pickCandidate(vid, i) {
+  const c = FOOT.cands[i];
+  if (!c) return;
+  const list = $("#cand-list");
+  if (list) list.innerHTML = `<div class="empty">Downloading…</div>`;
+  try {
+    await post(`/api/videos/${vid}/scenes/${FOOT.n}/pick`, { item: c });
+    toast("Footage replaced — re-render to apply it.", "ok");
+    loadFootage(vid);
+  } catch (e) { toast(esc(e.message), "bad"); drawCandidates(); }
+}
+async function manualPick(vid, n) {
+  const path = prompt("Path to an image or video on this computer:");
+  if (!path) return;
+  try { await post(`/api/videos/${vid}/scenes/${n}/manual`, { path }); toast("Footage replaced — re-render to apply it.", "ok"); loadFootage(vid); }
+  catch (e) { toast(esc(e.message), "bad"); }
 }
 
 // ------------------------------------------------------------------ QUEUE

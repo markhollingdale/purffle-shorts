@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Swap a scene's footage after rendering**: every video now keeps its chosen clips/images in a `footage/` folder next to it and a `media.json` manifest (source, id, link, query and credit per scene). In the Studio, open a video and use the new **Footage** section to **Replace** a scene with a fresh pick from your stock sources or **Use my file** to drop in your own image/video, then **Re-render**. The re-render reuses the saved script and every other scene, and updates the video in place (same library entry). Deleting the video removes the folder.
 - **Edit settings in the Studio**: the System page now edits the look and content defaults — `WATERMARK`, `END_CTA`, `CHANNEL_NAME`, `AUDIENCE`, caption style/position/words/uppercase, colour grade, transitions, Ken Burns, progress bar, hook overlay, `MUSIC_DIR`, `MUSIC_FILE` and music volume/ducking. Each setting has a short description, the Music ones have a folder/file browser with a live track count, and the Studio writes only those keys back to `.env` (API keys, credentials, comments and every other line are left untouched). Changes apply to new videos without a restart; the CLI, MCP and autopilot read the same file, so they agree.
 
 ### Fixed

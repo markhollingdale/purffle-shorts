@@ -9,6 +9,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections.abc import Callable
@@ -118,6 +119,27 @@ def _media_for(timeline, media_map: dict[int, MediaItem]) -> list[MediaItem]:
         k = max([k for k in keys if k <= st.index], default=keys[0])
         out.append(media_map[k])
     return out
+
+
+def _is_inside(path: Path, root: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def _safe_name(text: str) -> str:
+    return re.sub(r"[^\w.-]", "_", str(text)) or "item"
+
+
+def _footage_rel(m: MediaItem, folder: Path) -> str:
+    """Where a scene's file lives, relative to the video folder when it is inside it."""
+    if not m.path:
+        return ""
+    try:
+        return str(m.path.relative_to(folder))
+    except ValueError:
+        return str(m.path)
 
 
 class Studio:
@@ -233,16 +255,19 @@ class Studio:
     def produce(self, script: Script, pick: Topic, writer: str, *, upload: bool, t0: float | None = None,
                 languages: list[str] | None = None, media_map: dict[int, MediaItem] | None = None,
                 credits: set[str] | None = None, parent_id: int | None = None, settings: Settings | None = None,
-                state: dict | None = None) -> Result:
+                state: dict | None = None, existing: dict | None = None) -> Result:
         t0 = t0 or time.time()
         state = state if state is not None else {}
         s = settings or self.s
         if script.language and script.language != s.language:
             s = replace(s, language=script.language, tts_voice="", tts_voice_b="")
 
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        name = f"{stamp}_{slugify(script.title)}" + (f"-{s.language}" if parent_id else "")
-        folder = _unique_folder(s.out_path, name).resolve()  # absolute: history outlives cwd
+        if existing and existing.get("folder"):   # re-render in place: same folder and history row
+            folder = Path(existing["folder"]).resolve()
+        else:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            name = f"{stamp}_{slugify(script.title)}" + (f"-{s.language}" if parent_id else "")
+            folder = _unique_folder(s.out_path, name).resolve()  # absolute: history outlives cwd
         state["folder"] = folder
         work = folder / "work"
         work.mkdir(parents=True, exist_ok=True)
@@ -260,6 +285,11 @@ class Studio:
             if media_map:
                 media = _media_for(timeline, media_map)
                 credits = set(credits or ())
+                for m in media:
+                    if m.source.startswith("pexels"):
+                        credits.add("Pexels")
+                    elif m.source.startswith("pixabay"):
+                        credits.add("Pixabay")
             else:
                 jobs = [(script.scenes[st.index].search_query, script.scenes[st.index].image_prompt,
                          st.duration + T) for st in timeline]
@@ -297,6 +327,8 @@ class Studio:
                                    f"{info['duration']:.2f}s, expected {s.width}x{s.height} {total:.2f}s")
             extract_frame(video, min(1.2, total / 3), folder / "cover.jpg")
             (folder / "captions.srt").write_text(srt(chunks), encoding="utf-8")
+            if media_map is None:
+                self._persist_footage(folder, work, by_scene)
 
             title = final_title(script, s)
             description = final_description(script, credits, s)
@@ -307,23 +339,29 @@ class Studio:
                 "duration": round(info["duration"], 2), "resolution": f"{s.width}x{s.height}",
                 "llm": writer, "score": script.score, "review": script.review, "cast": script.cast,
                 "voice": f"{speech.engine}:{speech.voice}", "timing": speech.timing,
-                "visuals": [{"source": m.source, "id": m.id, "kind": m.kind, "query": m.query} for m in media],
+                "visuals": [{"scene": st.index, **m.to_dict(), "file": _footage_rel(m, folder)}
+                            for st, m in zip(timeline, media)],
                 "parent_id": parent_id, "created_at": now_iso(),
             }
             (folder / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
 
-            rid = self.history.add_video(
-                subject=pick.subject, source=pick.source, topic=script.topic, style=script.style,
-                language=s.language, title=title, description=description, tags=script.tags,
-                folder=str(folder), video_path=str(video), duration=info["duration"],
-                llm=meta["llm"], voice=meta["voice"], status="rendered", score=script.score, parent_id=parent_id)
+            if existing:
+                rid = existing["id"]
+                self.history.update_video(rid, title=title, description=description, duration=info["duration"],
+                                          status="rendered", score=script.score, video_path=str(video), error=None)
+            else:
+                rid = self.history.add_video(
+                    subject=pick.subject, source=pick.source, topic=script.topic, style=script.style,
+                    language=s.language, title=title, description=description, tags=script.tags,
+                    folder=str(folder), video_path=str(video), duration=info["duration"],
+                    llm=meta["llm"], voice=meta["voice"], status="rendered", score=script.score, parent_id=parent_id)
+                if not media_map:
+                    self.history.mark_media([m.key for m in media if m.source not in REUSABLE_SOURCES])
+                if pick.key and not parent_id:
+                    self.history.mark_topic(pick.key)
+                if pick.idea_id and not parent_id:
+                    self.history.link_idea(pick.idea_id, rid)
             state["record_id"] = rid
-            if not media_map:
-                self.history.mark_media([m.key for m in media if m.source not in REUSABLE_SOURCES])
-            if pick.key and not parent_id:
-                self.history.mark_topic(pick.key)
-            if pick.idea_id and not parent_id:
-                self.history.link_idea(pick.idea_id, rid)
 
             took = time.time() - t0
             log.info("Rendered %s (%.1fs video) in %.0fs -> %s", title, info["duration"], took, video)
@@ -344,6 +382,73 @@ class Studio:
         finally:
             if not os.getenv("KEEP_WORK"):
                 shutil.rmtree(work, ignore_errors=True)
+
+    def _persist_footage(self, folder: Path, work: Path, by_scene: dict[int, MediaItem]) -> None:
+        """Keep the chosen clips/images with the video and write ``media.json``.
+
+        Downloaded files are moved out of the (deleted) work folder into ``footage/``; the manifest records
+        the source, id, link and query per scene, so a scene's pick can be shown, re-used on a re-render, or
+        swapped for another candidate later without searching again."""
+        dest = folder / "footage"
+        manifest: dict[str, dict] = {}
+        for idx, m in sorted(by_scene.items()):
+            entry = m.to_dict()
+            file = ""
+            if m.path and m.path.exists():
+                if _is_inside(m.path, work):
+                    dest.mkdir(exist_ok=True)
+                    ext = m.path.suffix or (".mp4" if m.kind == "video" else ".jpg")
+                    target = dest / f"scene{idx:02d}_{_safe_name(m.source)}_{_safe_name(m.id)}{ext}"
+                    if m.path.resolve() != target.resolve():
+                        shutil.move(str(m.path), str(target))
+                    m.path = target
+                    file = str(target.relative_to(folder))
+                else:
+                    file = str(m.path)  # a file in your own media folder: referenced in place
+            entry["file"] = file
+            manifest[str(idx)] = entry
+        (folder / "media.json").write_text(json.dumps({"scenes": manifest}, indent=2, ensure_ascii=False))
+
+    def rerender(self, rid: int, *, upload: bool | None = None) -> Result:
+        """Re-render an existing video in place, reusing its saved script and footage.
+
+        Only the scenes whose media was swapped change; nothing is re-searched unless the footage folder is
+        missing. The same history row and folder are updated, so the library entry stays put."""
+        rec = self.history.get(rid)
+        if not rec or not rec.get("folder"):
+            return Result(False, status="failed", error=f"no video #{rid} to re-render")
+        folder = Path(rec["folder"])
+        script_path = folder / "script.json"
+        if not script_path.exists():
+            return Result(False, status="failed", error="this video has no script.json to re-render")
+        script = load_script(script_path, self.s)
+        media_map = self._load_media_map(folder)
+        pick = Topic(script.topic or rec.get("topic") or rec.get("title") or "", "script")
+        log.info("Re-rendering #%d with %d saved scene(s) of footage", rid, len(media_map))
+        return self.produce(script, pick, "re-render", upload=bool(self.s.upload if upload is None else upload),
+                            media_map=media_map or None, existing=rec, languages=[])
+
+    def _load_media_map(self, folder: Path) -> dict[int, MediaItem]:
+        """Read ``media.json`` back into scene-index -> MediaItem, with paths inside the footage folder."""
+        path = folder / "media.json"
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        out: dict[int, MediaItem] = {}
+        for key, entry in (data.get("scenes") or {}).items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            file = entry.get("file") or ""
+            p = Path(file) if file else None
+            if p and not p.is_absolute():
+                p = folder / p
+            out[idx] = MediaItem.from_dict(entry, path=p if p and p.exists() else None)
+        return out
 
     def _translation(self, script: Script, pick: Topic, writer: str, lang: str, s: Settings,
                      by_scene: dict[int, MediaItem], credits: set[str], parent_id: int, upload: bool) -> Result:

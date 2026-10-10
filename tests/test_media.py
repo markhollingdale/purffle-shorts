@@ -64,6 +64,22 @@ def test_simplify_query():
     assert M.simplify_query("The octopus in the deep ocean") == "octopus deep"
 
 
+def test_media_item_dict_roundtrip():
+    m = M.MediaItem("pexels", "7", "video", url="u", width=1080, height=1920, duration=12.5,
+                    credit="Ann", query="cats", extra={"thumb": "t"})
+    d = m.to_dict()
+    assert d["thumb"] == "t" and d["duration"] == 12.5
+    back = M.MediaItem.from_dict(d)
+    assert back.key == "pexels:7" and back.duration == 12.5 and back.thumb == "t"
+
+
+def test_candidates_skip_ai_and_skip_download(monkeypatch):
+    v = M.Visuals(Settings(visual_sources=["pexels", "pollinations"], pexels_api_key="k"))
+    monkeypatch.setattr(v, "_search", lambda source, query: [M.MediaItem(source, "1", "video", width=1080, height=1920)])
+    out = v.candidates("cats")
+    assert [c.source for c in out] == ["pexels"]        # AI sources are never "picked" from a list
+
+
 def test_no_footage_falls_back_to_generated(tmp_path):
     v = M.Visuals(Settings(visual_sources=["local"], media_dir=str(tmp_path / "none")))
     item = v.for_scene(0, "octopus", "octopus", "sea", 3.0, tmp_path)
