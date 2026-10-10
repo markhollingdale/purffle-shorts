@@ -90,6 +90,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn svg { width: 16px; height: 16px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.actions:not(:first-child) { margin-top: 14px; }   /* keep buttons off the block above them */
 .actions.end { justify-content: flex-end; }
 
 .seg { display: inline-flex; padding: 3px; gap: 3px; border-radius: 11px; background: var(--bg); border: 1px solid var(--line); flex-wrap: wrap; }
