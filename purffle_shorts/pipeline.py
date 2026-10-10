@@ -49,6 +49,10 @@ STAGES = {"topic": 2, "script": 8, "review": 20, "voice": 32, "footage": 45, "ca
 ProgressFn = Callable[[str, int, str], None]
 
 
+class Cancelled(RuntimeError):
+    """Raised by the progress callback when the user cancels a running job."""
+
+
 @dataclass
 class Result:
     ok: bool
@@ -129,6 +133,8 @@ class Studio:
         if self.progress:
             try:
                 self.progress(stage, STAGES.get(stage, 0), message)
+            except Cancelled:
+                raise  # a user cancel aborts the run
             except Exception:  # a progress display must never break a video
                 log.debug("progress callback failed", exc_info=True)
 
@@ -213,8 +219,8 @@ class Studio:
             else:
                 script, pick, writer = self.draft(topic, source=source, style=style, url=url, document=document)
             return self.produce(script, pick, writer, upload=upload, t0=t0, languages=languages, state=state)
-        except (youtube.NotAuthorized, LLMConfigError, KeyboardInterrupt):
-            raise  # setup problems stop the run instead of failing every video the same way
+        except (youtube.NotAuthorized, LLMConfigError, KeyboardInterrupt, Cancelled):
+            raise  # setup problems (or a cancel) stop the run instead of failing every video the same way
         except Exception as e:
             if pick is not None and pick.idea_id and not state.get("record_id"):
                 self.history.release_idea(pick.idea_id)

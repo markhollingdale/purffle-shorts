@@ -110,13 +110,19 @@ class StudioServer:
 
     def cancel(self, jid: int) -> bool:
         job = self.jobs.get(jid)
-        if job and job.status == "queued":
-            job.status, job.finished = "cancelled", time.time()
-            return True
-        return False
+        if not job or job.status not in ("queued", "running"):
+            return False
+        job.status = "cancelled"
+        if job.started is None:  # still queued: it never starts
+            job.finished = time.time()
+        return True  # running: the worker aborts at the next stage boundary
 
     def _progress(self, job: Job):
+        from .pipeline import Cancelled
+
         def cb(stage: str, pct: int, message: str) -> None:
+            if job.status == "cancelled":
+                raise Cancelled()
             job.stage, job.pct = stage, max(job.pct, pct) if stage != "done" else 100
             job.message = message or job.message
         return cb
@@ -158,7 +164,7 @@ class StudioServer:
         return s
 
     def _worker(self) -> None:
-        from .pipeline import Studio
+        from .pipeline import Cancelled, Studio
         while True:
             job = self.queue.get()
             if job.status == "cancelled":
@@ -179,6 +185,9 @@ class StudioServer:
                     studio = Studio(s, progress=self._progress(job))
                     ok = self._run(job, studio, s, p)
                 job.status = "done" if ok else "failed"
+            except Cancelled:
+                job.status = "cancelled"
+                log.info("Studio job %d cancelled", job.id)
             except Exception as e:
                 job.status, job.result = "failed", {"error": str(e)}
                 log.exception("Studio job %d failed", job.id)

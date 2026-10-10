@@ -12,6 +12,7 @@ provides them, otherwise from an aligner or an estimate) so captions land exactl
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import random
@@ -28,6 +29,10 @@ from .timing import Word, estimate_timings, tokenize, transfer_timings
 from .utils import PermanentError, http, raise_for_status, with_retries
 
 log = logging.getLogger("purffle")
+
+# Hard ceiling on one edge-tts call. edge-tts can hang forever on a dead WebSocket (the remote closes
+# the connection but the client keeps waiting), so we cap it and let the retry logic in _edge try again.
+EDGE_TIMEOUT_S = 120
 
 # Hand-picked, natural-sounding default voices per language (edge-tts). Override with TTS_VOICE.
 EDGE_VOICES = {
@@ -93,17 +98,24 @@ def _edge(text: str, out: Path, settings: Settings) -> tuple[Path, list[Word], s
     voice = _pick_voice(settings, EDGE_VOICES.get(settings.language, EDGE_VOICES["en"]))
     path = out / "voice.mp3"
 
-    def _do():
+    async def _collect(f) -> list[Word]:
         words: list[Word] = []
         comm = edge_tts.Communicate(text, voice, rate=settings.tts_rate, boundary="WordBoundary",
                                     receive_timeout=60)
+        async for chunk in comm.stream():
+            if chunk["type"] == "audio":
+                f.write(chunk["data"])
+            elif chunk["type"] == "WordBoundary":
+                start = chunk["offset"] / 1e7
+                words.append(Word(chunk["text"], start, start + chunk["duration"] / 1e7))
+        return words
+
+    def _do():
         with open(path, "wb") as f:
-            for chunk in comm.stream_sync():
-                if chunk["type"] == "audio":
-                    f.write(chunk["data"])
-                elif chunk["type"] == "WordBoundary":
-                    start = chunk["offset"] / 1e7
-                    words.append(Word(chunk["text"], start, start + chunk["duration"] / 1e7))
+            try:
+                words = asyncio.run(asyncio.wait_for(_collect(f), timeout=EDGE_TIMEOUT_S))
+            except asyncio.TimeoutError as e:
+                raise RuntimeError(f"edge-tts timed out after {EDGE_TIMEOUT_S}s") from e
         if path.stat().st_size == 0:
             raise RuntimeError("edge-tts returned no audio")
         return words
