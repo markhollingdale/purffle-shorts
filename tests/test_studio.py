@@ -203,6 +203,43 @@ def test_scenes_and_manual_footage(server, tmp_path):
     assert "job" in json.loads(req(port, "POST", f"/api/videos/{vid}/render", {}, app.token)[2])
 
 
+def test_draft_job_picks_footage(server):
+    app, port = server
+    _, _, body = req(port, "POST", "/api/draft", {"offline": True, "style": "facts"}, app.token)
+    jid = json.loads(body)["job"]
+    for _ in range(200):
+        job = json.loads(req(port, "GET", f"/api/jobs/{jid}")[2])
+        if job["status"] in ("done", "failed"):
+            break
+        time.sleep(0.05)
+    assert job["status"] == "done", job
+    did = job["result"]["draft_id"]
+    assert (app._draft_dir(did) / "script.json").exists()
+    data = json.loads(req(port, "GET", f"/api/drafts/{did}/scenes")[2])
+    assert data["scenes"] and data["media_base"] == f"/drafts/{did}/media"
+
+
+def test_draft_scene_footage_can_be_swapped(server, tmp_path):
+    app, port = server
+    draft_id = "draft01"
+    folder = app._draft_dir(draft_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "script.json").write_text(json.dumps({
+        "title": "D", "scenes": [{"narration": "hello", "search_query": "cats", "image_prompt": "a cat"}]}),
+        encoding="utf-8")
+    data = json.loads(req(port, "GET", f"/api/drafts/{draft_id}/scenes")[2])
+    assert data["scenes"][0]["index"] == 0 and data["scenes"][0]["media"] is None
+    assert req(port, "POST", f"/api/drafts/{draft_id}/scenes/0/search", {"query": "cats"}, app.token)[0] == 200
+    img = tmp_path / "pic.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    status, _, body = req(port, "POST", f"/api/drafts/{draft_id}/scenes/0/manual", {"path": str(img)}, app.token)
+    assert status == 200 and json.loads(body)["media"]["source"] == "manual"
+    assert (folder / "footage").is_dir()
+    assert req(port, "GET", f"/drafts/{draft_id}/media/0")[0] == 200
+    # rendering with the draft reuses the picked footage (no new search)
+    assert "job" in json.loads(req(port, "POST", "/api/make", {"draft_id": draft_id}, app.token)[2])
+
+
 def test_browse_lists_dirs_and_audio_files(server, tmp_path):
     app, port = server
     root = tmp_path / "lib"

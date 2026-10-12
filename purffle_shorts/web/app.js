@@ -100,6 +100,7 @@ async function post(url, body) {
 const S = {
   info: null, options: null, jobs: [], view: "create",
   form: store.get("form", {}), draft: store.get("draft", null), createJob: store.get("createJob", null),
+  draftMeta: store.get("draftMeta", null),   // {id, api, fbase, fromVideo} for the current script's footage
   lib: { status: "", q: "" }, seen: new Map(), voices: {},
 };
 
@@ -159,11 +160,17 @@ async function boot() {
   status();
   window.addEventListener("hashchange", route);
   document.addEventListener("keydown", e => {
-    if (e.key === "Escape") { if (PICK) closePicker(); else closeDrawer(); }
+    if (e.key === "Escape") { if (!$("#cand").hidden) closeCand(); else if (PICK) closePicker(); else closeDrawer(); }
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && S.view === "create") startMake();
   });
   $("#drawer").addEventListener("click", e => { if (e.target.closest("[data-close]")) closeDrawer(); });
   $("#picker").addEventListener("click", onPickerClick);
+  $("#cand").addEventListener("click", e => {
+    if (e.target.closest("[data-cand-close]")) return closeCand();
+    if (e.target.closest("[data-cand-search]")) return candSearch();
+    const pick = e.target.closest("[data-cand-pick]");
+    if (pick) return candPick(+pick.dataset.candPick);
+  });
   route();
   tick();
   setInterval(tick, 1500);
@@ -220,7 +227,12 @@ function finished(j) {
     store.set("createJob", S.createJob);
     S.draft = r.script;
     saveDraft();
-    toast("Script ready — read it, edit anything, then render.", "ok");
+    if (r.draft_id) {
+      S.draftMeta = { id: r.draft_id, api: `/api/drafts/${r.draft_id}`, fbase: `/drafts/${r.draft_id}/media`,
+                      fromVideo: null };
+      store.set("draftMeta", S.draftMeta);
+    }
+    toast("Script ready — footage is picked below. Change a scene or its search, then render.", "ok", 6000);
     if (S.view === "create") drawSide();
     return;
   }
@@ -267,8 +279,13 @@ function payload(extra = {}) {
 async function startMake(extra = {}) {
   const f = S.form;
   if (f.mode === "url" && !f.url.trim() && !extra.script) return toast("Paste the address of a web page first.", "bad");
+  const e = Object.assign({}, extra);
+  if (S.draftMeta) {                      // render with the footage already picked for this script
+    if (S.draftMeta.id) e.draft_id = S.draftMeta.id;
+    else if (S.draftMeta.fromVideo) e.from_video = S.draftMeta.fromVideo;
+  }
   try {
-    const { job } = await post("/api/make", payload(extra));
+    const { job } = await post("/api/make", payload(e));
     S.createJob = { id: job, kind: "make", session: TOKEN };
     store.set("createJob", S.createJob);
     S.seen.set(job, "queued");
@@ -492,9 +509,15 @@ function drawEditor() {
         <span class="num">${multi ? esc(s.speaker || "A") : n + 1}</span>
         <div class="field">
           <textarea data-i="${n}" data-s="narration" aria-label="Scene ${n + 1} narration">${esc(s.narration)}</textarea>
+          ${S.draftMeta ? `<div class="scene-foot">
+            <div class="scene-thumb" data-thumb="${n}"><span class="ph">…</span></div>
+            <div class="grow">
+              <div class="with-btn"><input type="text" data-i="${n}" data-s="search_query" value="${esc(s.search_query)}" placeholder="footage search" aria-label="Footage search"><button class="btn sm" type="button" data-find="${n}">${I.search}Search</button><button class="btn ghost sm" type="button" data-file="${n}" title="Use an image or video from this computer">${I.upload}</button></div>
+              <div class="match" data-match="${n}"></div>
+            </div>
+          </div>` : `<input type="text" data-i="${n}" data-s="search_query" value="${esc(s.search_query)}" placeholder="footage search" aria-label="Footage search">`}
           <div class="row">
             ${multi ? `<button class="btn ghost sm" type="button" data-act="speaker" data-i="${n}" title="Switch speaker">A/B</button>` : ""}
-            <input type="text" data-i="${n}" data-s="search_query" value="${esc(s.search_query)}" placeholder="footage search" aria-label="Footage search">
             <span class="tools">
               <button class="btn ghost sm" type="button" data-act="up" data-i="${n}" aria-label="Move up">${I.up}</button>
               <button class="btn ghost sm" type="button" data-act="down" data-i="${n}" aria-label="Move down">${I.down}</button>
@@ -520,6 +543,14 @@ function drawEditor() {
     saveDraft();
   };
   box.onclick = e => {
+    const find = e.target.closest("[data-find]");
+    if (find && S.draftMeta) {
+      const n = +find.dataset.find;
+      const q = box.querySelector(`[data-i="${n}"][data-s="search_query"]`);
+      return openCand(S.draftMeta.api, S.draftMeta.fbase, n, q ? q.value : "", loadEditorFootage);
+    }
+    const file = e.target.closest("[data-file]");
+    if (file && S.draftMeta) return editorManual(+file.dataset.file);
     const b = e.target.closest("[data-act]");
     if (!b) return;
     const n = +b.dataset.i, sc = d.scenes;
@@ -531,7 +562,13 @@ function drawEditor() {
     saveDraft();
     drawEditor();
   };
-  $("#discard").onclick = () => { if (confirm("Discard this script?")) { S.draft = null; saveDraft(); drawEditor(); } };
+  if (S.draftMeta) loadEditorFootage();
+  $("#discard").onclick = () => {
+    if (!confirm("Discard this script?")) return;
+    S.draft = null; S.draftMeta = null;
+    saveDraft(); store.set("draftMeta", null);
+    drawEditor();
+  };
   $("#render-btn").onclick = () => {
     const clean = Object.assign({}, d, { scenes: d.scenes.filter(s => s.narration.trim()) });
     if (!clean.scenes.length) return toast("The script has no narration.", "bad");
@@ -626,6 +663,8 @@ async function openVideo(id) {
   if (ed) ed.onclick = () => {
     S.draft = Object.assign({}, sc, { title: (sc.title || "").replace(/\s*#shorts$/i, "") });
     saveDraft();
+    S.draftMeta = { id: null, api: `/api/videos/${id}`, fbase: `/media/${id}`, fromVideo: id };
+    store.set("draftMeta", S.draftMeta);
     if (sc.language) S.form.language = sc.language;
     if (sc.style) S.form.style = sc.style;
     saveForm();
@@ -647,7 +686,46 @@ function closeDrawer() {
 }
 
 // ------------------------------------------------------------------ FOOTAGE (per scene)
-let FOOT = { vid: 0, n: 0, query: "", cands: [] };
+function mediaTag(fbase, n, kind) {
+  const src = `${fbase}/${n}`;
+  return kind === "video" ? `<video src="${src}" muted playsinline preload="metadata"></video>`
+    : `<img src="${src}" alt="" loading="lazy">`;
+}
+function describeMatch(sc) {
+  const m = sc.media || {};
+  const wanted = (sc.search_query || "").trim();
+  const used = ((m.query || "") || wanted).trim();
+  if (m.source === "generated") return `Nothing matched “${esc(wanted || used)}” — a generated background will be used.`;
+  if (used) return `Using ${esc(m.source)}${m.kind ? " " + esc(m.kind) : ""} for “${esc(used)}”${wanted && used.toLowerCase() !== wanted.toLowerCase() ? ` (fallback from “${esc(wanted)}”)` : ""}.`;
+  return wanted ? `Will search “${esc(wanted)}”.` : "";
+}
+
+// Create editor: preview the footage picked for each scene, and let it be changed.
+async function loadEditorFootage() {
+  const meta = S.draftMeta;
+  if (!meta || !$("#editor")) return;
+  let data;
+  try { data = await get(`${meta.api}/scenes`); } catch { return; }
+  if (S.draftMeta !== meta || !$("#editor")) return;
+  (data.scenes || []).forEach(sc => {
+    const thumb = $(`[data-thumb="${sc.index}"]`);
+    if (thumb) thumb.innerHTML = sc.preview ? mediaTag(meta.fbase, sc.index, sc.kind)
+      : `<div class="ph">${esc(sc.media ? sc.media.source : "none")}</div>`;
+    const match = $(`[data-match="${sc.index}"]`);
+    if (match) match.innerHTML = describeMatch(sc);
+  });
+}
+async function editorManual(n) {
+  const path = prompt("Path to an image or video on this computer:");
+  if (!path) return;
+  try {
+    await post(`${S.draftMeta.api}/scenes/${n}/manual`, { path });
+    toast("Footage set — it will be used when you render.", "ok");
+    loadEditorFootage();
+  } catch (e) { toast(esc(e.message), "bad"); }
+}
+
+// Post-render drawer: the same scenes for a finished video.
 async function loadFootage(vid) {
   const box = $("#d-footage");
   if (!box) return;
@@ -657,24 +735,25 @@ async function loadFootage(vid) {
   if (!$("#d-footage")) return;
   const scenes = data.scenes || [];
   box.innerHTML = `<h2>Footage</h2>
-    <p class="hint">Not happy with a clip? <b>Replace</b> pulls a fresh one from your visual sources; <b>Use my file</b> takes an image or video from this computer. Then re-render — the rest is kept.</p>
+    <p class="hint">Each scene is matched with the AI's short search phrase (below), tried against your visual sources in order — Pexels/Pixabay <b>videos first, then photos</b> — and retried with a simplified phrase and the topic if nothing scores. Not happy? <b>Replace</b> searches again with a phrase you can edit; <b>Use my file</b> takes an image or video from this computer. Then re-render — the rest is kept.</p>
     ${scenes.length ? `<div class="shots">${scenes.map(s => shotCard(vid, s)).join("")}</div>`
       : `<div class="empty">This video has no scenes to edit.</div>`}
     <div class="actions end"><button class="btn primary" type="button" data-rerender="${vid}">${I.refresh}Re-render with this footage</button></div>`;
 }
 function shotCard(vid, s) {
   const m = s.media || {};
-  const preview = s.preview
-    ? (m.kind === "video"
-      ? `<video src="/media/${vid}/${s.index}" muted playsinline preload="metadata"></video>`
-      : `<img src="/media/${vid}/${s.index}" alt="" loading="lazy">`)
-    : `<div class="ph">${esc(m.source || "no clip")}</div>`;
-  const chip = s.media ? `<span class="chip">${esc(m.source)}${m.kind ? " · " + esc(m.kind) : ""}</span>` : `<span class="chip">none</span>`;
+  const generated = m.source === "generated";
+  const preview = s.preview ? mediaTag(`/media/${vid}`, s.index, m.kind)
+    : `<div class="ph">${generated ? "generated" : esc(m.source || "no clip")}</div>`;
+  const chip = !s.media ? `<span class="chip">none</span>`
+    : generated ? `<span class="chip bad">no match</span>`
+      : `<span class="chip">${esc(m.source)}${m.kind ? " · " + esc(m.kind) : ""}${m.credit ? " · " + esc(m.credit) : ""}</span>`;
   return `<div class="shot">
     <div class="shot-thumb">${preview}</div>
     <div class="shot-body">
       <div class="shot-head"><b>Scene ${s.index + 1}</b>${chip}</div>
       <small>${esc((s.narration || "").slice(0, 150))}</small>
+      <small class="match">${describeMatch(s)}</small>
       <div class="actions">
         <button class="btn ghost sm" type="button" data-replace="${s.index}" data-q="${esc(s.search_query || "")}">${I.spark}Replace</button>
         <button class="btn ghost sm" type="button" data-manual="${s.index}">${I.upload}Use my file</button>
@@ -685,14 +764,10 @@ function shotCard(vid, s) {
 function bindFootage(box, vid) {
   box.onclick = async e => {
     const rep = e.target.closest("[data-replace]");
-    if (rep) return showCandidates(box, vid, +rep.dataset.replace, rep.dataset.q || "");
+    if (rep) return openCand(`/api/videos/${vid}`, `/media/${vid}`, +rep.dataset.replace, rep.dataset.q || "",
+                             () => loadFootage(vid));
     const man = e.target.closest("[data-manual]");
     if (man) return manualPick(vid, +man.dataset.manual);
-    const srch = e.target.closest("[data-search]");
-    if (srch) return runCandidateSearch(box, vid);
-    if (e.target.closest("[data-back]")) return loadFootage(vid);
-    const cand = e.target.closest("[data-cand]");
-    if (cand) return pickCandidate(vid, +cand.dataset.cand);
     const rr = e.target.closest("[data-rerender]");
     if (rr) {
       try { await post(`/api/videos/${vid}/render`, {}); toast("Re-rendering in the background — watch Queue.", "info"); tick(); }
@@ -700,56 +775,72 @@ function bindFootage(box, vid) {
     }
   };
 }
-async function showCandidates(box, vid, n, query) {
-  FOOT = { vid, n, query: query || "", cands: [] };
-  box.innerHTML = `<h2>Replace scene ${n + 1}</h2>
-    <div class="field"><label>Footage search</label><div class="with-btn">
-      <input type="text" id="cand-q" value="${esc(query)}" placeholder="e.g. octopus underwater">
-      <button class="btn sm" type="button" data-search="${n}">${I.search}Search</button></div></div>
-    <div id="cand-list" class="cand-list"><div class="empty">Searching…</div></div>
-    <div class="actions end"><button class="btn ghost sm" type="button" data-back="${vid}">Back to scenes</button></div>`;
-  await runCandidateSearch(box, vid);
-}
-async function runCandidateSearch(box, vid) {
-  const qEl = $("#cand-q");
-  FOOT.query = qEl ? qEl.value.trim() : FOOT.query;
-  const list = $("#cand-list");
-  if (list) list.innerHTML = `<div class="empty">Searching…</div>`;
-  try {
-    const res = await post(`/api/videos/${vid}/scenes/${FOOT.n}/search`, { query: FOOT.query });
-    FOOT.cands = res.candidates || [];
-    drawCandidates();
-  } catch (e) { if (list) list.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-}
-function drawCandidates() {
-  const list = $("#cand-list");
-  if (!list) return;
-  if (!FOOT.cands.length) {
-    list.innerHTML = `<div class="empty"><b>No results</b>Try different words, or add a free Pexels/Pixabay key in <a href="#system">System</a>.</div>`;
-    return;
-  }
-  list.innerHTML = FOOT.cands.map((c, i) => `
-    <button class="cand" type="button" data-cand="${i}">
-      <div class="cand-thumb">${c.thumb ? `<img src="${esc(c.thumb)}" alt="" loading="lazy">` : `<div class="ph">${esc(c.kind)}</div>`}</div>
-      <div class="cand-meta"><b>${esc(c.source)}</b><small>${esc(c.kind)}${c.width ? ` · ${c.width}×${c.height}` : ""}${c.duration ? ` · ${Math.round(c.duration)}s` : ""}${c.credit ? ` · ${esc(c.credit)}` : ""}</small></div>
-    </button>`).join("");
-}
-async function pickCandidate(vid, i) {
-  const c = FOOT.cands[i];
-  if (!c) return;
-  const list = $("#cand-list");
-  if (list) list.innerHTML = `<div class="empty">Downloading…</div>`;
-  try {
-    await post(`/api/videos/${vid}/scenes/${FOOT.n}/pick`, { item: c });
-    toast("Footage replaced — re-render to apply it.", "ok");
-    loadFootage(vid);
-  } catch (e) { toast(esc(e.message), "bad"); drawCandidates(); }
-}
 async function manualPick(vid, n) {
   const path = prompt("Path to an image or video on this computer:");
   if (!path) return;
   try { await post(`/api/videos/${vid}/scenes/${n}/manual`, { path }); toast("Footage replaced — re-render to apply it.", "ok"); loadFootage(vid); }
   catch (e) { toast(esc(e.message), "bad"); }
+}
+
+// ------------------------------------------------------------------ candidate picker (shared modal)
+let CAND = { api: "", fbase: "", n: 0, query: "", cands: [], onPicked: null };
+async function openCand(api, fbase, n, query, onPicked) {
+  CAND = { api, fbase, n, query: query || "", cands: [], onPicked };
+  const el = $("#cand");
+  el.hidden = false;
+  el.innerHTML = `<div class="cand-bg" data-cand-close></div>
+    <section class="cand-panel" role="dialog" aria-modal="true" aria-label="Choose footage">
+      <div class="cand-head"><b>Scene ${n + 1} footage</b></div>
+      <div class="cand-body">
+        <div class="with-btn"><input type="text" id="cand-q" value="${esc(query)}" placeholder="footage search"><button class="btn sm" type="button" data-cand-search>${I.search}Search</button></div>
+        <div class="cand-list" id="cand-list"><div class="empty">Searching…</div></div>
+      </div>
+      <div class="cand-foot"><span class="hint">Pick a result to use for this scene.</span><button class="btn sm" type="button" data-cand-close>Cancel</button></div>
+    </section>`;
+  await candSearch();
+}
+async function candSearch() {
+  const q = $("#cand-q") ? $("#cand-q").value.trim() : CAND.query;
+  CAND.query = q;
+  const list = $("#cand-list");
+  if (list) list.innerHTML = `<div class="empty">Searching…</div>`;
+  try {
+    CAND.cands = (await post(`${CAND.api}/scenes/${CAND.n}/search`, { query: q })).candidates || [];
+  } catch (e) {
+    if (list) list.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    return;
+  }
+  drawCandList();
+}
+function drawCandList() {
+  const list = $("#cand-list");
+  if (!list) return;
+  if (!CAND.cands.length) {
+    list.innerHTML = `<div class="empty"><b>No results</b>Try different words, or add a free Pexels/Pixabay key in <a href="#system">System</a>.</div>`;
+    return;
+  }
+  list.innerHTML = CAND.cands.map((c, i) => `
+    <button class="cand" type="button" data-cand-pick="${i}">
+      <div class="cand-thumb">${c.thumb ? `<img src="${esc(c.thumb)}" alt="" loading="lazy">` : `<div class="ph">${esc(c.kind)}</div>`}</div>
+      <div class="cand-meta"><b>${esc(c.source)}</b><small>${esc(c.kind)}${c.width ? ` · ${c.width}×${c.height}` : ""}${c.duration ? ` · ${Math.round(c.duration)}s` : ""}${c.credit ? ` · ${esc(c.credit)}` : ""}</small></div>
+    </button>`).join("");
+}
+async function candPick(i) {
+  const c = CAND.cands[i];
+  if (!c) return;
+  const list = $("#cand-list");
+  if (list) list.innerHTML = `<div class="empty">Downloading…</div>`;
+  try {
+    await post(`${CAND.api}/scenes/${CAND.n}/pick`, { item: c });
+    const done = CAND.onPicked;
+    closeCand();
+    toast("Footage picked.", "ok");
+    if (done) done();
+  } catch (e) { toast(esc(e.message), "bad"); drawCandList(); }
+}
+function closeCand() {
+  const el = $("#cand");
+  if (el) { el.hidden = true; el.innerHTML = ""; }
 }
 
 // ------------------------------------------------------------------ QUEUE

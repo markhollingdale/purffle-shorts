@@ -45,11 +45,11 @@ def test_footage_is_kept_and_reloadable(settings, tmp_path):
     by_scene = {0: MediaItem("pexels", "7", "video", url="https://example/x", path=src, query="cats",
                              credit="Jörg ≈"),
                 1: MediaItem("local", str(own), "image", path=own)}
-    studio._persist_footage(folder, folder / "work", by_scene)
-    assert (folder / "footage").is_dir() and not src.exists()
-    manifest = json.loads((folder / "media.json").read_text(encoding="utf-8"))
-    assert manifest["scenes"]["0"]["credit"] == "Jörg ≈"
-    assert manifest["scenes"]["0"]["source"] == "pexels" and (folder / manifest["scenes"]["0"]["file"]).exists()
+    manifest = studio._persist_footage(folder, by_scene)
+    assert (folder / "footage").is_dir() and manifest[0]["file"].startswith("footage")
+    entry = json.loads((folder / "media.json").read_text(encoding="utf-8"))["scenes"]["0"]
+    assert entry["credit"] == "Jörg ≈"
+    assert entry["source"] == "pexels" and (folder / entry["file"]).exists()
     back = studio._load_media_map(folder)
     assert back[0].source == "pexels" and back[0].path.exists()
     assert back[1].path == own          # your own media is referenced in place, not copied

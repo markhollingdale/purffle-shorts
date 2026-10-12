@@ -224,8 +224,8 @@ class Studio:
     # ------------------------------------------------------------------ one video
     def make(self, topic: str | None = None, *, source: str | None = None, upload: bool | None = None,
              style: str | None = None, script_file: str | Path | None = None, script: Script | None = None,
-             url: str | None = None, document: str | Path | None = None,
-             languages: list[str] | None = None) -> Result:
+             url: str | None = None, document: str | Path | None = None, languages: list[str] | None = None,
+             media_map: dict[int, MediaItem] | None = None) -> Result:
         t0 = time.time()
         s = self.s
         upload = s.upload if upload is None else upload
@@ -240,7 +240,8 @@ class Studio:
                 log.info("Script from %s (%d scenes): %s", script_file or "editor", len(script.scenes), script.title)
             else:
                 script, pick, writer = self.draft(topic, source=source, style=style, url=url, document=document)
-            return self.produce(script, pick, writer, upload=upload, t0=t0, languages=languages, state=state)
+            return self.produce(script, pick, writer, upload=upload, t0=t0, languages=languages, state=state,
+                                media_map=media_map)
         except (youtube.NotAuthorized, LLMConfigError, KeyboardInterrupt, Cancelled):
             raise  # setup problems (or a cancel) stop the run instead of failing every video the same way
         except Exception as e:
@@ -328,8 +329,7 @@ class Studio:
                                    f"{info['duration']:.2f}s, expected {s.width}x{s.height} {total:.2f}s")
             extract_frame(video, min(1.2, total / 3), folder / "cover.jpg")
             (folder / "captions.srt").write_text(srt(chunks), encoding="utf-8")
-            if media_map is None:
-                self._persist_footage(folder, work, by_scene)
+            manifest = self._persist_footage(folder, by_scene)
 
             title = final_title(script, s)
             description = final_description(script, credits, s)
@@ -340,8 +340,8 @@ class Studio:
                 "duration": round(info["duration"], 2), "resolution": f"{s.width}x{s.height}",
                 "llm": writer, "score": script.score, "review": script.review, "cast": script.cast,
                 "voice": f"{speech.engine}:{speech.voice}", "timing": speech.timing,
-                "visuals": [{"scene": st.index, **m.to_dict(), "file": _footage_rel(m, folder)}
-                            for st, m in zip(timeline, media)],
+                "visuals": [{**manifest[st.index], "scene": st.index}
+                            for st in timeline if st.index in manifest],
                 "parent_id": parent_id, "created_at": now_iso(),
             }
             (folder / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False),
@@ -385,32 +385,54 @@ class Studio:
             if not os.getenv("KEEP_WORK"):
                 shutil.rmtree(work, ignore_errors=True)
 
-    def _persist_footage(self, folder: Path, work: Path, by_scene: dict[int, MediaItem]) -> None:
+    def _persist_footage(self, folder: Path, by_scene: dict[int, MediaItem]) -> dict[int, dict]:
         """Keep the chosen clips/images with the video and write ``media.json``.
 
-        Downloaded files are moved out of the (deleted) work folder into ``footage/``; the manifest records
-        the source, id, link and query per scene, so a scene's pick can be shown, re-used on a re-render, or
-        swapped for another candidate later without searching again."""
+        Files downloaded into the (deleted) work folder are moved into ``footage/``; footage picked earlier
+        (a draft workspace, or a file in your own ``media/`` folder) is copied in or referenced in place. The
+        manifest records the source, id, link, query and credit per scene, so a scene's pick can be shown,
+        re-used on a re-render, or swapped later. Returns {scene_index: entry}."""
         dest = folder / "footage"
-        manifest: dict[str, dict] = {}
+        manifest: dict[int, dict] = {}
         for idx, m in sorted(by_scene.items()):
             entry = m.to_dict()
             file = ""
             if m.path and m.path.exists():
-                if _is_inside(m.path, work):
+                if _is_inside(m.path, dest):
+                    file = _footage_rel(m, folder)                 # already in footage/ (re-render or draft)
+                elif m.source == "local":
+                    file = str(m.path)                             # your own media folder: referenced in place
+                else:
                     dest.mkdir(exist_ok=True)
                     ext = m.path.suffix or (".mp4" if m.kind == "video" else ".jpg")
                     target = dest / f"scene{idx:02d}_{_safe_name(m.source)}_{_safe_name(m.id)}{ext}"
                     if m.path.resolve() != target.resolve():
-                        shutil.move(str(m.path), str(target))
-                    m.path = target
+                        shutil.copy2(m.path, target)   # copy: the work folder may still be needed by translations
                     file = str(target.relative_to(folder))
-                else:
-                    file = str(m.path)  # a file in your own media folder: referenced in place
             entry["file"] = file
-            manifest[str(idx)] = entry
-        (folder / "media.json").write_text(json.dumps({"scenes": manifest}, indent=2, ensure_ascii=False),
-                                           encoding="utf-8")
+            manifest[idx] = entry
+        (folder / "media.json").write_text(
+            json.dumps({"scenes": {str(k): v for k, v in manifest.items()}}, indent=2, ensure_ascii=False),
+            encoding="utf-8")
+        return manifest
+
+    def prepare_footage(self, script: Script, folder: Path, need: float | None = None) -> dict[int, MediaItem]:
+        """Search and download footage for a drafted script, before it is rendered.
+
+        Downloads land in ``folder/footage`` and a ``media.json`` manifest is written, so the Studio can show
+        previews, let you change a scene's search phrase or pick another result, and render without searching
+        again. Returns {scene_index: item}."""
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / "footage"
+        dest.mkdir(exist_ok=True)
+        n = max(1, len(script.scenes))
+        need = need or max(3.0, float(self.s.target_seconds) / n)
+        self._step("footage", f"{n} scenes")
+        jobs = [(sc.search_query, sc.image_prompt, need) for sc in script.scenes]
+        media = Visuals(self.s, self.history.used_media()).for_scenes(jobs, script.topic, dest)
+        by_scene = {i: m for i, m in enumerate(media)}
+        self._persist_footage(folder, by_scene)
+        return by_scene
 
     def rerender(self, rid: int, *, upload: bool | None = None) -> Result:
         """Re-render an existing video in place, reusing its saved script and footage.

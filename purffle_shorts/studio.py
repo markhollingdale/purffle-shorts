@@ -16,6 +16,7 @@ import mimetypes
 import queue
 import re
 import secrets
+import shutil
 import threading
 import time
 import webbrowser
@@ -204,12 +205,23 @@ class StudioServer:
                 self.current = None
 
     def _run(self, job: Job, studio, s: Settings, p: dict) -> bool:
-        from .script import script_from_data
+        from .script import load_script, script_from_data
         if job.kind == "draft":
             script, pick, writer = studio.draft(p.get("topic") or None, source=p.get("source") or None,
                                                 style=s.style if s.style != "auto" else None,
                                                 url=p.get("url") or None)
-            job.result = {"script": script.to_dict(), "source": pick.source, "llm": writer}
+            # Pick and download footage now, so each scene can be previewed and fixed before rendering.
+            draft_id = secrets.token_urlsafe(9)
+            folder = self._draft_dir(draft_id)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "script.json").write_text(json.dumps(script.to_dict(), indent=2, ensure_ascii=False),
+                                                encoding="utf-8")
+            try:
+                studio.prepare_footage(script, folder)
+            except Exception as e:  # a draft must not fail because a footage search hiccuped
+                log.warning("Footage search during draft failed: %s", e)
+            self._prune_drafts()
+            job.result = {"script": script.to_dict(), "source": pick.source, "llm": writer, "draft_id": draft_id}
             job.stage, job.pct = "done", 100
             return True
         if job.kind == "plan":
@@ -234,9 +246,15 @@ class StudioServer:
         langs = p.get("also_langs")
         if isinstance(langs, str):
             langs = [x.strip().lower() for x in langs.split(",") if x.strip()]
+        media_map = None
+        if p.get("draft_id"):  # reuse the footage picked when the script was drafted
+            folder = self._draft_dir(str(p["draft_id"]))
+            media_map = studio._load_media_map(folder)
+            if script is None and (folder / "script.json").exists():
+                script = load_script(folder / "script.json", s)
         r = studio.make(p.get("topic") or None, source=p.get("source") or None, upload=bool(p.get("upload")),
                         style=s.style if s.style != "auto" else None, script=script, url=p.get("url") or None,
-                        languages=[str(x)[:8] for x in (langs or [])][:6])
+                        languages=[str(x)[:8] for x in (langs or [])][:6], media_map=media_map or None)
         job.result = _result(r)
         return r.ok
 
@@ -444,13 +462,22 @@ class StudioServer:
         rec = self.studio.history.get(vid)
         return Path(rec["folder"]) if rec and rec.get("folder") else None
 
-    def scenes(self, vid: int) -> dict | None:
-        """Every scene with its narration, search query and current footage, for the video drawer."""
+    def _draft_dir(self, draft_id: str) -> Path:
+        safe = re.sub(r"[^\w-]", "", str(draft_id or ""))[:40]
+        if not safe:
+            raise ValueError("bad draft id")
+        return self.settings.data_path / "drafts" / safe
+
+    def _prune_drafts(self, keep: int = 12) -> None:
+        root = self.settings.data_path / "drafts"
+        if not root.is_dir():
+            return
+        dirs = sorted((d for d in root.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime, reverse=True)
+        for d in dirs[keep:]:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def _scenes_payload(self, folder: Path, vid: int, title: str, media_base: str) -> dict:
         from .media import AI_SOURCES
-        rec = self.studio.history.get(vid)
-        folder = self._rec_folder(vid)
-        if rec is None or folder is None:
-            return None
         try:
             script = json.loads((folder / "script.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -459,25 +486,39 @@ class StudioServer:
         out = []
         for n, sc in enumerate(script.get("scenes") or []):
             m = media_map.get(n)
-            entry = m.to_dict() if m else None
             out.append({"index": n, "narration": sc.get("narration", ""), "search_query": sc.get("search_query", ""),
-                        "image_prompt": sc.get("image_prompt", ""), "media": entry,
+                        "image_prompt": sc.get("image_prompt", ""), "media": m.to_dict() if m else None,
                         "preview": bool(m and m.path), "kind": m.kind if m else ""})
-        return {"id": vid, "title": rec.get("title"), "scenes": out,
-                "sources": [s for s in self.settings.visual_sources if s not in AI_SOURCES]}
+        return {"id": vid, "title": title, "scenes": out, "media_base": media_base,
+                "sources": [x for x in self.settings.visual_sources if x not in AI_SOURCES]}
 
-    def media_file_for(self, vid: int, n: int) -> Path | None:
+    def scenes(self, vid: int) -> dict | None:
+        """Every scene with its narration, search phrase and current footage, for the video drawer."""
+        rec = self.studio.history.get(vid)
         folder = self._rec_folder(vid)
-        if folder is None:
+        if rec is None or folder is None:
             return None
+        return self._scenes_payload(folder, vid, rec.get("title"), f"/media/{vid}")
+
+    def draft_scenes(self, draft_id: str) -> dict | None:
+        folder = self._draft_dir(draft_id)
+        if not (folder / "script.json").exists():
+            return None
+        return self._scenes_payload(folder, 0, "Draft", f"/drafts/{draft_id}/media")
+
+    def _media_file(self, folder: Path, n: int) -> Path | None:
         m = self.studio._load_media_map(folder).get(n)
         return m.path if m and m.path and m.path.exists() else None
 
-    def scene_search(self, vid: int, n: int, query: str) -> dict:
-        """Fresh stock candidates for a scene — returned as links, nothing is downloaded yet."""
+    def media_file_for(self, vid: int, n: int) -> Path | None:
+        folder = self._rec_folder(vid)
+        return self._media_file(folder, n) if folder else None
+
+    def draft_media_file(self, draft_id: str, n: int) -> Path | None:
+        return self._media_file(self._draft_dir(draft_id), n)
+
+    def _scene_search(self, n: int, query: str) -> dict:
         from .media import Visuals
-        if self._rec_folder(vid) is None:
-            raise ValueError("no such video")
         q = (query or "").strip()
         if not q:
             raise ValueError("give a search query")
@@ -486,12 +527,18 @@ class StudioServer:
                                             "path": str(c.path) if c.source == "local" and c.path else ""}
                                            for c in cands]}
 
-    def scene_pick(self, vid: int, n: int, item: dict) -> dict:
-        """Download one candidate (or take a local file) and make it this scene's footage."""
-        from .media import MediaItem, Visuals
-        folder = self._rec_folder(vid)
-        if folder is None:
+    def scene_search(self, vid: int, n: int, query: str) -> dict:
+        if self._rec_folder(vid) is None:
             raise ValueError("no such video")
+        return self._scene_search(n, query)
+
+    def draft_search(self, draft_id: str, n: int, query: str) -> dict:
+        if not self._draft_dir(draft_id).is_dir():
+            raise ValueError("no such draft")
+        return self._scene_search(n, query)
+
+    def _scene_pick(self, folder: Path, n: int, item: dict) -> dict:
+        from .media import MediaItem, Visuals
         if n < 0 or not isinstance(item, dict):
             raise ValueError("bad candidate")
         if item.get("local") or item.get("source") == "local":
@@ -503,17 +550,22 @@ class StudioServer:
             mi = MediaItem.from_dict(item)
             if not mi.url:
                 raise ValueError("candidate has no url")
-            work = folder / "work" / "pick"
-            work.mkdir(parents=True, exist_ok=True)
-            Visuals(self.settings, used_keys=set()).fetch(mi, work, n)
+            tmp = folder / "work" / "pick"
+            tmp.mkdir(parents=True, exist_ok=True)
+            Visuals(self.settings, used_keys=set()).fetch(mi, tmp, n)
         return {"media": self._store_scene(folder, n, mi)}
 
-    def scene_manual(self, vid: int, n: int, path: str) -> dict:
-        """Copy a file from your own computer into the video and use it for this scene."""
-        from .media import IMAGE_EXT, VIDEO_EXT, MediaItem
+    def scene_pick(self, vid: int, n: int, item: dict) -> dict:
         folder = self._rec_folder(vid)
         if folder is None:
             raise ValueError("no such video")
+        return self._scene_pick(folder, n, item)
+
+    def draft_pick(self, draft_id: str, n: int, item: dict) -> dict:
+        return self._scene_pick(self._draft_dir(draft_id), n, item)
+
+    def _scene_manual(self, folder: Path, n: int, path: str) -> dict:
+        from .media import IMAGE_EXT, VIDEO_EXT, MediaItem
         src = Path(str(path or "").strip())
         if not src.is_file():
             raise ValueError("file not found")
@@ -522,8 +574,16 @@ class StudioServer:
         mi = MediaItem("manual", src.name, "video" if src.suffix.lower() in VIDEO_EXT else "image", path=src)
         return {"media": self._store_scene(folder, n, mi)}
 
+    def scene_manual(self, vid: int, n: int, path: str) -> dict:
+        folder = self._rec_folder(vid)
+        if folder is None:
+            raise ValueError("no such video")
+        return self._scene_manual(folder, n, path)
+
+    def draft_manual(self, draft_id: str, n: int, path: str) -> dict:
+        return self._scene_manual(self._draft_dir(draft_id), n, path)
+
     def _store_scene(self, folder: Path, n: int, item) -> dict:
-        import shutil
         dest = folder / "footage"
         dest.mkdir(exist_ok=True)
         ext = item.path.suffix or (".mp4" if item.kind == "video" else ".jpg")
@@ -633,6 +693,14 @@ def _handler(app: StudioServer, bound_host: str):
             m = re.fullmatch(r"/media/(\d+)/(\d+)", path)
             if m:
                 f = app.media_file_for(int(m.group(1)), int(m.group(2)))
+                return self._file(f) if f else self._send(404, b"not found", "text/plain")
+            m = re.fullmatch(r"/api/drafts/([\w-]+)/scenes", path)
+            if m:
+                data = app.draft_scenes(m.group(1))
+                return self._json(data) if data else self._json({"error": "not found"}, 404)
+            m = re.fullmatch(r"/drafts/([\w-]+)/media/(\d+)", path)
+            if m:
+                f = app.draft_media_file(m.group(1), int(m.group(2)))
                 return self._file(f) if f else self._send(404, b"not found", "text/plain")
             if path == "/api/jobs":
                 jobs = sorted(app.jobs.values(), key=lambda j: j.id, reverse=True)[:40]
@@ -756,6 +824,24 @@ def _handler(app: StudioServer, bound_host: str):
                 rec = h.get(int(m.group(1)))
                 label = f"Upload: {rec['title']}" if rec else f"Upload #{m.group(1)}"
                 return self._json({"job": app.submit("upload", {"id": int(m.group(1))}, label).id})
+            m = re.fullmatch(r"/api/drafts/([\w-]+)/scenes/(\d+)/search", path)
+            if m:
+                try:
+                    return self._json(app.draft_search(m.group(1), int(m.group(2)), str(body.get("query") or "")))
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 400)
+            m = re.fullmatch(r"/api/drafts/([\w-]+)/scenes/(\d+)/pick", path)
+            if m:
+                try:
+                    return self._json(app.draft_pick(m.group(1), int(m.group(2)), body.get("item") or body))
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 400)
+            m = re.fullmatch(r"/api/drafts/([\w-]+)/scenes/(\d+)/manual", path)
+            if m:
+                try:
+                    return self._json(app.draft_manual(m.group(1), int(m.group(2)), str(body.get("path") or "")))
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/videos/(\d+)/scenes/(\d+)/search", path)
             if m:
                 try:

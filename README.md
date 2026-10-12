@@ -85,7 +85,7 @@ It is made for **content creators**, **faceless YouTube channels**, **educators*
 - A separate stock-footage search for every scene (Pexels, Pixabay), portrait clips preferred, smart 9:16 crop, never reused across videos.
 - AI images per scene from OpenAI (gpt-image-1 / DALL·E 3) or Pollinations, or your own `media/` folder.
 - Ken Burns motion on photos, colour grades, transitions.
-- **Fix a bad clip without re-doing the video:** every render keeps its chosen footage (a `footage/` folder plus a `media.json` manifest with each pick's source, id, link and query). In the Library, open a video and swap any scene — pick another result from a fresh stock search, or drop in your own image/video — then re-render; the script, voice timing and every other scene are reused, and the video is updated in place.
+- **Fix footage before or after rendering:** a draft picks each scene's clip as soon as the script is written, so you see every image/video with its search phrase and can **Search** again or **Use my file** before rendering. Every render also keeps its footage (a `footage/` folder plus a `media.json` manifest with each pick's source, id, link and query), so from the Library you can swap a scene on a finished video and re-render — reusing the script, voice timing and every other scene — and the video is updated in place.
 
 **Captions & editing**
 - Captions appear exactly when each word is spoken, with the current word highlighted. 6 styles; Latin, Indic, Arabic, Thai and CJK scripts.
@@ -464,6 +464,7 @@ python -m purffle_shorts studio        # opens http://127.0.0.1:8765
 
 - **Create:** topic, web page, idea queue or "surprise me"; eleven formats; language, length, aspect, voices, caption style (with a preview), grade, transitions, footage sources, model, Script Doctor mode, extra languages, upload.
 - **Draft, then edit:** the AI writes and reviews the script, you see the retention score and the problems it found, change any line, reorder or add scenes, switch speakers, then render exactly that script.
+- **Footage while you draft:** drafting also picks each scene's image/video. Every scene shows its clip, the search phrase used, and **Search** (a grid of fresh results) or **Use my file** — so you fix a bad match before rendering, and the render reuses exactly what you picked.
 - **Live progress** through topic, script, review, voice, footage, captions, render and upload, with the log.
 - **Library:** thumbnails with status, format, language and score; open one to play it, download the MP4 or captions, upload it, edit and re-render it, swap a scene's footage (see below), or delete it.
 - **Footage:** open a video and every scene appears with its current clip; **Replace** searches Pexels/Pixabay for a better one, **Use my file** takes an image or video from your computer, and **Re-render** rebuilds the video in place using the saved script and all the other scenes.
