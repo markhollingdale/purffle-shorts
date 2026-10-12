@@ -874,15 +874,20 @@ function buildExport() {
     if (multi) o.speaker = s.speaker || "A";
     return o;
   });
+  // the original topic the user typed (not the script's normalised subject)
+  const topic = (S.form.mode === "topic" && (S.form.topic || "").trim()) || d.topic || "";
   const rules = 'Return ONLY a JSON object, no other text: {"scenes":[{"narration":"the spoken line",'
     + '"search_query":"1-4 English words naming concrete stock footage","image_prompt":"a vivid English prompt '
     + 'for an AI image"}]}. Keep the total spoken length about the same — roughly ' + targetWords + ' words (~'
     + secs + ' seconds). You may rework, split or merge scenes as long as the length stays close'
-    + (multi ? ", and keep a speaker (A/B) on each scene." : ".");
+    + (multi ? ", and keep a speaker (A/B) on each scene." : ".")
+    + ' Output raw, valid JSON only. Do not use Markdown code fences, XML tags, escape wrappers, or any '
+    + 'formatting around the JSON. Ensure the response can be parsed directly by JSON.parse() without any '
+    + 'preprocessing.';
   return JSON.stringify({
-    topic: d.topic,
+    topic,
     instructions: "Rewrite these short vertical-video scenes so they hold viewers to the end. "
-      + "The scenes were generated from the topic below — use it as context. " + rules,
+      + 'The scenes were generated from the "topic" field — use it as context. ' + rules,
     scenes,
   }, null, 2);
 }
@@ -914,9 +919,22 @@ function downloadText(name, text) {
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
 }
+function parseScenesText(text) {
+  let t = String(text || "").trim();
+  const fence = t.match(/^```[a-zA-Z]*\s*([\s\S]*?)\s*```$/);   // strip ```json … ``` wrappers
+  if (fence) t = fence[1].trim();
+  const tryParse = s => { try { return JSON.parse(s); } catch { return undefined; } };
+  let data = tryParse(t);
+  if (data === undefined) {                                      // else pull the first {…} / […] block out
+    const start = Math.min(...[t.indexOf("{"), t.indexOf("[")].filter(i => i !== -1));
+    const end = Math.max(t.lastIndexOf("}"), t.lastIndexOf("]"));
+    if (Number.isFinite(start) && end > start) data = tryParse(t.slice(start, end + 1));
+  }
+  if (data === undefined) throw new Error("That isn't valid JSON — paste the model's JSON (code fences are fine).");
+  return data;
+}
 function applyImport(text) {
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error("That isn't valid JSON."); }
+  const data = parseScenesText(text);
   const scenes = Array.isArray(data) ? data : (data.scenes || []);
   if (!Array.isArray(scenes) || !scenes.length) throw new Error("No scenes found in that JSON.");
   let changed = 0;
