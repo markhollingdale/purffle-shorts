@@ -363,19 +363,10 @@ def write_script(llm, subject: str, settings: Settings, *, source: str = "niche"
 # --------------------------------------------------------------------------------------------------
 # Script Doctor — a second pass that scores the draft for retention and fixes what is weak.
 # --------------------------------------------------------------------------------------------------
-def review_prompt(script: Script, settings: Settings, rewrite: bool) -> tuple[str, str]:
-    words, n_scenes = scene_plan(script.style, settings.target_seconds)
-    lang = LANGUAGES.get(script.language, script.language)
+def critique_prompt(script: Script, settings: Settings) -> tuple[str, str]:
     draft = {k: v for k, v in script.to_dict().items() if k not in ("style", "language", "score", "review")}
     system = ("You are a ruthless YouTube Shorts retention editor. You know that viewers decide in 1-2 "
               "seconds and swipe away at any slow moment. You reply with a single JSON object and nothing else.")
-    task = (f"""Then rewrite it into the strongest version you can. Keep the same subject, format, language ({lang}),
-the same JSON structure and about {words} words in about {n_scenes} scenes. Fix every issue you listed:
-sharpen the hook, cut filler, make vague lines concrete, remove any claim that may not be true, keep the
-payoff for the end, end with a short call to action. Put the rewritten script in "script".
-Format rules to keep:
-{_format_rules(script.style)}""" if rewrite else
-            'Return only "score" and "issues".')
     user = f"""Review this YouTube Short script ({STYLES[script.style]}).
 
 {json.dumps(draft, ensure_ascii=False, indent=1)}
@@ -383,45 +374,122 @@ Format rules to keep:
 Score it 0-100 for how well it will hold viewers to the end: hook strength in the first 2 seconds (most
 important), curiosity gaps, pacing, specificity, payoff, and accuracy risk. Be strict: 85+ is rare.
 List the concrete problems in "issues" (max 5, short sentences, most important first).
-{task}"""
+Return only "score" and "issues"."""
     return system, user
 
 
-def review_script(llm, script: Script, settings: Settings) -> Script:
-    """Score the script and (in rewrite mode) replace it with the improved version. Never fails the video:
-    if the review call or its rewrite is unusable, the original script is kept."""
-    mode = settings.script_review
-    if llm is None or mode == "off":
-        return script
-    rewrite = mode == "rewrite"
-    system, user = review_prompt(script, settings, rewrite)
-    try:
-        data = llm.complete_json(system, user, REVIEW_SCHEMA if rewrite else SCORE_SCHEMA, max_tokens=5000)
-    except Exception as e:
-        log.warning("Script Doctor skipped: %s", e)
-        return script
+def rewrite_prompt(script: Script, settings: Settings, score, issues: list[str]) -> tuple[str, str]:
+    words, n_scenes = scene_plan(script.style, settings.target_seconds)
+    lang = LANGUAGES.get(script.language, script.language)
+    draft = {k: v for k, v in script.to_dict().items() if k not in ("style", "language", "score", "review")}
+    listed = "\n".join(f"- {i}" for i in issues) or "- (none listed)"
+    system = ("You are a top YouTube Shorts writer. You rewrite drafts so they hold viewers to the end. "
+              "You reply with a single JSON object and nothing else.")
+    user = f"""A retention editor scored this draft {score if score is not None else '?'}/100 and found these problems:
+
+{listed}
+
+Rewrite it so every one of those problems is fixed. Do not merely reword or reorder: if the payoff is given
+away early, move it to the end; if a line is vague, make it concrete; if a claim may not be true, cut or soften
+it; if the hook is weak, make the first two seconds a specific, high-stakes surprise. Keep the same subject,
+format and language ({lang}), the same JSON structure, and about {words} words in about {n_scenes} scenes.
+
+Here is the draft:
+
+{json.dumps(draft, ensure_ascii=False, indent=1)}
+
+Format rules to keep:
+{_format_rules(script.style)}
+
+Return "script" (your improved version) plus "score" and "issues" that describe YOUR rewritten script."""
+    return system, user
+
+
+def _score_issues(data: dict) -> tuple[int | None, list[str]]:
     try:
         score = max(0, min(100, int(data.get("score"))))
     except (TypeError, ValueError):
         score = None
     issues = [str(i).strip() for i in data.get("issues") or [] if str(i).strip()][:5]
+    return score, issues
+
+
+def critique_script(llm, script: Script, settings: Settings) -> tuple[int | None, list[str]]:
+    """Score the script and list its weaknesses. One LLM call."""
+    return _score_issues(llm.complete_json(*critique_prompt(script, settings), SCORE_SCHEMA, max_tokens=1500))
+
+
+def rewrite_script(llm, script: Script, settings: Settings, score, issues: list[str]) -> Script:
+    """Rewrite the script to fix the given issues. One LLM call.
+
+    Returns the improved script (with its own score/issues). Raises ValueError if the reply has no script or
+    the result is the wrong length."""
+    data = llm.complete_json(*rewrite_prompt(script, settings, score, issues), REVIEW_SCHEMA, max_tokens=5000)
+    if not isinstance(data.get("script"), dict):
+        raise ValueError("the rewrite reply had no script")
+    better = normalize(data["script"], script.topic, script.style, script.language)
+    target = scene_plan(script.style, settings.target_seconds)[0]
+    n = word_count(better.narration, script.language)
+    if not 0.5 * target <= n <= 1.7 * target:
+        raise ValueError(f"rewrite is {n} words for a {target}-word target")
+    better.score, better.review = _score_issues(data)
+    return better
+
+
+def review_script(llm, script: Script, settings: Settings) -> Script:
+    """Score the script and, in rewrite mode, replace it with a version that fixes the problems found.
+
+    Critique first, then a rewrite driven by those issues (which reports the rewritten script's own score and
+    remaining issues). Never fails the video: if a call or the rewrite is unusable, the best script is kept."""
+    mode = settings.script_review
+    if llm is None or mode == "off":
+        return script
+    try:
+        score, issues = critique_script(llm, script, settings)
+    except Exception as e:
+        log.warning("Script Doctor skipped: %s", e)
+        return script
     result = script
-    if rewrite and isinstance(data.get("script"), dict):
+    if mode == "rewrite":
         try:
-            better = normalize(data["script"], script.topic, script.style, script.language)
-            target = scene_plan(script.style, settings.target_seconds)[0]
-            n = word_count(better.narration, script.language)
-            if 0.5 * target <= n <= 1.7 * target:
-                result = better
-            else:
-                log.warning("Script Doctor rewrite ignored: %d words for a %d-word target", n, target)
-        except ValueError as e:
-            log.warning("Script Doctor rewrite ignored: %s", e)
-    result.score, result.review = score, issues
+            result = rewrite_script(llm, script, settings, score, issues)
+        except Exception as e:
+            log.warning("Script Doctor rewrite skipped: %s", e)
+            result = script
+    if result is script:
+        script.score, script.review = score, issues
     changed = "rewritten" if result is not script else "kept"
     log.info("Script Doctor: %s/100, %s%s", score if score is not None else "?", changed,
              f" — {issues[0]}" if issues else "")
     return result
+
+
+def run_doctor(llm, script: Script, settings: Settings, passes: int = 1,
+               on_pass=None) -> tuple[Script, list[dict]]:
+    """Run the critique + rewrite cycle ``passes`` times, keeping a history of what each pass found and did."""
+    history: list[dict] = []
+    current = script
+    for i in range(max(1, int(passes))):
+        try:
+            score, issues = critique_script(llm, current, settings)
+        except Exception as e:
+            history.append({"pass": i + 1, "error": str(e)})
+            break
+        entry = {"pass": i + 1, "before": {"title": current.title, "score": current.score},
+                 "critique": {"score": score, "issues": issues}, "rewrote": False}
+        try:
+            better = rewrite_script(llm, current, settings, score, issues)
+            entry["rewrote"] = True
+            entry["after"] = {"title": better.title, "score": better.score, "issues": better.review}
+            current = better
+        except Exception as e:
+            entry["error"] = str(e)
+            current.score, current.review = score, issues
+        history.append(entry)
+        if on_pass:
+            on_pass(entry)
+    log.info("Script Doctor: %d pass(es), final score %s", len(history), current.score)
+    return current, history
 
 
 # --------------------------------------------------------------------------------------------------

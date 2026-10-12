@@ -52,7 +52,7 @@ const STAGES = [["topic", "Topic"], ["script", "Script"], ["review", "Review"], 
   ["captions", "Captions"], ["render", "Render"], ["check", "Check"], ["upload", "Upload"]];
 const STATUS_CHIP = { uploaded: "ok", scheduled: "blue", rendered: "accent", queued: "", failed: "bad" };
 const KIND_ICON = { make: I.film, draft: I.pen, clip: I.scissors, plan: I.bulb, upload: I.upload, stats: I.chart,
-  render: I.refresh };
+  render: I.refresh, doctor: I.spark };
 const SETTING_INFO = {
   channel_name: ["Channel name", "Used as the default watermark and for your branding."],
   audience: ["Audience", "Who the videos are for — guides the AI's tone and examples."],
@@ -139,6 +139,16 @@ const shortTitle = t => (t || "").replace(/\s*#shorts$/i, "");
 const words = t => (t || "").trim().split(/\s+/).filter(Boolean).length;
 const saveForm = () => store.set("form", S.form);
 const saveDraft = () => store.set("draft", S.draft);
+const saveDraftMeta = () => store.set("draftMeta", S.draftMeta);
+function doctor() {                       // the Script Doctor state that travels with the current script
+  if (!S.draftMeta) S.draftMeta = { id: null, api: "", fbase: "", fromVideo: null, doctor: null };
+  if (!S.draftMeta.doctor) {
+    S.draftMeta.doctor = { score: S.draft ? (S.draft.score ?? null) : null,
+                           issues: (S.draft && S.draft.review) ? S.draft.review.slice() : [], history: [] };
+  }
+  return S.draftMeta.doctor;
+}
+function setDoctor(patch) { Object.assign(doctor(), patch); saveDraftMeta(); }
 
 // ------------------------------------------------------------------ boot & routing
 async function boot() {
@@ -160,16 +170,37 @@ async function boot() {
   status();
   window.addEventListener("hashchange", route);
   document.addEventListener("keydown", e => {
-    if (e.key === "Escape") { if (!$("#cand").hidden) closeCand(); else if (PICK) closePicker(); else closeDrawer(); }
+    if (e.key === "Escape") {
+      if (!$("#doc-modal").hidden) closeDocModal();
+      else if (!$("#viewer").hidden) closeViewer();
+      else if (!$("#cand").hidden) closeCand();
+      else if (PICK) closePicker();
+      else closeDrawer();
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && S.view === "create") startMake();
   });
   $("#drawer").addEventListener("click", e => { if (e.target.closest("[data-close]")) closeDrawer(); });
   $("#picker").addEventListener("click", onPickerClick);
+  $("#picker").addEventListener("input", onPickerInput);
+  $("#picker").addEventListener("keydown", onPickerKey);
   $("#cand").addEventListener("click", e => {
     if (e.target.closest("[data-cand-close]")) return closeCand();
     if (e.target.closest("[data-cand-search]")) return candSearch();
+    const view = e.target.closest("[data-cand-view]");
+    if (view) return candView(+view.dataset.candView);
     const pick = e.target.closest("[data-cand-pick]");
     if (pick) return candPick(+pick.dataset.candPick);
+  });
+  $("#viewer").addEventListener("click", e => { if (e.target.closest("[data-view-close]")) closeViewer(); });
+  $("#doc-modal").addEventListener("click", async e => {
+    if (e.target.closest("[data-doc-close]")) return closeDocModal();
+    const ta = $("#doc-text");
+    if (e.target.closest("[data-doc-copy]")) { try { await navigator.clipboard.writeText(ta.value); toast("Copied.", "ok", 2000); } catch { toast("Select the text and copy it.", "info"); } return; }
+    if (e.target.closest("[data-doc-download]")) { downloadText("purffle-scenes.json", ta.value); return; }
+    if (e.target.closest("[data-doc-apply]")) {
+      try { const n = applyImport(ta.value); closeDocModal(); drawEditor(); toast(`Imported ${n} scene(s) — check the footage and render.`, "ok"); }
+      catch (err) { toast(esc(err.message), "bad"); }
+    }
   });
   route();
   tick();
@@ -229,10 +260,23 @@ function finished(j) {
     saveDraft();
     if (r.draft_id) {
       S.draftMeta = { id: r.draft_id, api: `/api/drafts/${r.draft_id}`, fbase: `/drafts/${r.draft_id}/media`,
-                      fromVideo: null };
-      store.set("draftMeta", S.draftMeta);
+                      fromVideo: null, doctor: { score: r.script.score ?? null, issues: (r.script.review || []).slice(),
+                                                 history: [] } };
+      saveDraftMeta();
     }
     toast("Script ready — footage is picked below. Change a scene or its search, then render.", "ok", 6000);
+    if (S.view === "create") drawSide();
+    return;
+  }
+  if (j.kind === "doctor" && j.status === "done") {
+    const doc = doctor();
+    S.draft = r.script;
+    saveDraft();
+    doc.score = r.script.score;
+    doc.issues = r.script.review || [];
+    doc.history = (doc.history || []).concat(r.history || []);
+    saveDraftMeta();
+    toast("Script Doctor finished.", "ok");
     if (S.view === "create") drawSide();
     return;
   }
@@ -498,7 +542,7 @@ function drawEditor() {
     <div class="actions"><h2>Script</h2><span class="chip">${esc(d.style)}</span><span class="chip">${esc(d.language)}</span>
       <span class="wc" id="wc">${total} words · ~${Math.round(total / 2.6)}s</span>
       <button class="btn ghost sm" id="discard" type="button">${I.trash}Discard</button></div>
-    ${d.score != null ? `<div class="score"><div class="ring" data-p="${d.score}"><b>${d.score}</b></div><div><b>Retention score</b>${d.review && d.review.length ? `<ul>${d.review.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="hint">No issues found.</p>`}</div></div>` : ""}
+    ${doctorPanel()}
     <div class="field"><label>Title</label><input type="text" data-k="title" value="${esc(d.title)}" maxlength="90"></div>
     <div class="field"><label>On-screen hook</label><input type="text" data-k="hook_text" value="${esc(d.hook_text)}" maxlength="48"></div>
     ${multi ? `<div class="grid2"><div class="field"><label>Speaker A</label><input type="text" data-cast="0" value="${esc((d.cast || [])[0] || "")}"></div>
@@ -509,7 +553,7 @@ function drawEditor() {
         <span class="num">${multi ? esc(s.speaker || "A") : n + 1}</span>
         <div class="field">
           <textarea data-i="${n}" data-s="narration" aria-label="Scene ${n + 1} narration">${esc(s.narration)}</textarea>
-          ${S.draftMeta ? `<div class="scene-foot">
+          ${S.draftMeta && S.draftMeta.api ? `<div class="scene-foot">
             <div class="scene-thumb" data-thumb="${n}"><span class="ph">…</span></div>
             <div class="grow">
               <div class="with-btn"><input type="text" data-i="${n}" data-s="search_query" value="${esc(s.search_query)}" placeholder="footage search" aria-label="Footage search"><button class="btn sm" type="button" data-find="${n}">${I.search}Search</button><button class="btn ghost sm" type="button" data-file="${n}" title="Use an image or video from this computer">${I.upload}</button></div>
@@ -534,6 +578,7 @@ function drawEditor() {
   paint(box);
   box.oninput = e => {
     const el = e.target;
+    if (el.id === "doc-issues") { setDoctor({ issues: el.value.split("\n").map(s => s.trim()).filter(Boolean) }); return; }
     if (el.dataset.k) d[el.dataset.k] = el.value;
     else if (el.dataset.s) d.scenes[+el.dataset.i][el.dataset.s] = el.value;
     else if (el.dataset.cast) { d.cast = d.cast || ["", ""]; d.cast[+el.dataset.cast] = el.value; }
@@ -543,14 +588,25 @@ function drawEditor() {
     saveDraft();
   };
   box.onclick = e => {
+    const zoom = e.target.closest(".scene-thumb.zoom");
+    if (zoom && zoom.dataset.view) return openViewer(zoom.dataset.view, zoom.dataset.kind, zoom.dataset.title);
+    const doc = e.target.closest("[data-doctor]");
+    if (doc) {
+      const act = doc.dataset.doctor;
+      if (act === "critique") return doctorCritique(doc);
+      if (act === "rewrite") return doctorRewrite(doc);
+      if (act === "passes") return doctorPasses(doc);
+      if (act === "export") return openDocModal("export", buildExport());
+      if (act === "import") return openDocModal("import", "");
+    }
     const find = e.target.closest("[data-find]");
-    if (find && S.draftMeta) {
+    if (find && S.draftMeta && S.draftMeta.api) {
       const n = +find.dataset.find;
       const q = box.querySelector(`[data-i="${n}"][data-s="search_query"]`);
       return openCand(S.draftMeta.api, S.draftMeta.fbase, n, q ? q.value : "", loadEditorFootage);
     }
     const file = e.target.closest("[data-file]");
-    if (file && S.draftMeta) return editorManual(+file.dataset.file);
+    if (file && S.draftMeta && S.draftMeta.api) return editorManual(+file.dataset.file);
     const b = e.target.closest("[data-act]");
     if (!b) return;
     const n = +b.dataset.i, sc = d.scenes;
@@ -562,7 +618,7 @@ function drawEditor() {
     saveDraft();
     drawEditor();
   };
-  if (S.draftMeta) loadEditorFootage();
+  if (S.draftMeta && S.draftMeta.api) loadEditorFootage();
   $("#discard").onclick = () => {
     if (!confirm("Discard this script?")) return;
     S.draft = null; S.draftMeta = null;
@@ -663,8 +719,9 @@ async function openVideo(id) {
   if (ed) ed.onclick = () => {
     S.draft = Object.assign({}, sc, { title: (sc.title || "").replace(/\s*#shorts$/i, "") });
     saveDraft();
-    S.draftMeta = { id: null, api: `/api/videos/${id}`, fbase: `/media/${id}`, fromVideo: id };
-    store.set("draftMeta", S.draftMeta);
+    S.draftMeta = { id: null, api: `/api/videos/${id}`, fbase: `/media/${id}`, fromVideo: id,
+                    doctor: { score: sc.score ?? null, issues: (sc.review || []).slice(), history: [] } };
+    saveDraftMeta();
     if (sc.language) S.form.language = sc.language;
     if (sc.style) S.form.style = sc.style;
     saveForm();
@@ -709,20 +766,166 @@ async function loadEditorFootage() {
   if (S.draftMeta !== meta || !$("#editor")) return;
   (data.scenes || []).forEach(sc => {
     const thumb = $(`[data-thumb="${sc.index}"]`);
-    if (thumb) thumb.innerHTML = sc.preview ? mediaTag(meta.fbase, sc.index, sc.kind)
-      : `<div class="ph">${esc(sc.media ? sc.media.source : "none")}</div>`;
+    if (thumb) {
+      thumb.innerHTML = sc.preview ? mediaTag(meta.fbase, sc.index, sc.kind)
+        : `<div class="ph">${esc(sc.media ? sc.media.source : "none")}</div>`;
+      if (sc.preview) {
+        thumb.dataset.view = `${meta.fbase}/${sc.index}`;
+        thumb.dataset.kind = sc.kind;
+        thumb.dataset.title = `Scene ${sc.index + 1}`;
+        thumb.classList.add("zoom");
+      } else {
+        delete thumb.dataset.view;
+        thumb.classList.remove("zoom");
+      }
+    }
     const match = $(`[data-match="${sc.index}"]`);
     if (match) match.innerHTML = describeMatch(sc);
   });
 }
-async function editorManual(n) {
-  const path = prompt("Path to an image or video on this computer:");
-  if (!path) return;
+function editorManual(n) {
+  chooseMediaFile(S.draftMeta.api, n, loadEditorFootage);
+}
+
+// ------------------------------------------------------------------ Script Doctor panel
+function doctorPanel() {
+  const doc = doctor();
+  const h = doc.history || [];
+  const chip = doc.score == null ? `<span class="chip">not scored</span>`
+    : `<span class="chip ${doc.score >= 75 ? "ok" : doc.score >= 55 ? "accent" : "bad"}">Score ${doc.score}</span>`;
+  return `<section class="doctor">
+    <div class="actions"><h2>Script Doctor</h2>${chip}</div>
+    <p class="hint">Critique scores the script and lists issues. Edit the issues, then Rewrite to fix exactly those. Auto runs critique + rewrite several times, keeping a history.</p>
+    <div class="field"><label>Issues the rewrite will fix <span class="hint">· one per line</span></label>
+      <textarea id="doc-issues" placeholder="Run Critique to fill this in…">${esc((doc.issues || []).join("\n"))}</textarea></div>
+    <div class="actions">
+      <button class="btn sm" type="button" data-doctor="critique">${I.spark}Critique</button>
+      <button class="btn primary sm" type="button" data-doctor="rewrite">${I.pen}Rewrite</button>
+      <span class="auto-passes with-btn"><input type="number" id="doc-passes" min="1" max="6" value="2" aria-label="Passes"><button class="btn sm" type="button" data-doctor="passes">Auto</button></span>
+      <button class="btn ghost sm" type="button" data-doctor="export">${I.dl}Export</button>
+      <button class="btn ghost sm" type="button" data-doctor="import">${I.upload}Import</button>
+    </div>
+    ${h.length ? `<div class="doc-history"><b class="hint">History</b>${h.map(doctorPassHtml).join("")}</div>` : ""}
+  </section>`;
+}
+function doctorPassHtml(e) {
+  if (!e.critique) return `<div class="doc-pass bad">Pass ${e.pass}: ${esc(e.error || "failed")}</div>`;
+  const c = e.critique || {}, a = e.after || {};
+  return `<div class="doc-pass">
+    <div class="actions"><b>Pass ${e.pass}</b><span class="chip">${c.score ?? "?"}${a.score != null ? ` → ${a.score}` : ""}</span>
+      ${e.rewrote ? `<span class="chip ok">rewritten</span>` : `<span class="chip bad">kept</span>`}</div>
+    ${(c.issues || []).length ? `<ul>${c.issues.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="hint">No issues found.</p>`}
+    ${e.error ? `<p class="hint">${esc(e.error)}</p>` : ""}
+  </div>`;
+}
+async function doctorCritique(btn) {
+  if (!S.draft) return;
+  btn.disabled = true;
   try {
-    await post(`${S.draftMeta.api}/scenes/${n}/manual`, { path });
-    toast("Footage set — it will be used when you render.", "ok");
-    loadEditorFootage();
+    const res = await post("/api/doctor/critique", { script: S.draft });
+    setDoctor({ score: res.score, issues: res.issues || [] });
+    const ta = $("#doc-issues");
+    if (ta) ta.value = (res.issues || []).join("\n");
+    toast("Critique ready — edit the issues, then Rewrite.", "ok");
   } catch (e) { toast(esc(e.message), "bad"); }
+  finally { btn.disabled = false; }
+}
+async function doctorRewrite(btn) {
+  if (!S.draft) return;
+  const doc = doctor();
+  const issues = (($("#doc-issues") || {}).value || "").split("\n").map(s => s.trim()).filter(Boolean);
+  btn.disabled = true;
+  try {
+    const res = await post("/api/doctor/rewrite", { script: S.draft, score: doc.score, issues });
+    const before = { title: S.draft.title, score: doc.score, issues: issues.slice() };
+    S.draft = res.script;
+    saveDraft();
+    doc.score = res.score;
+    doc.issues = res.issues || [];
+    doc.history = (doc.history || []).concat([{ pass: (doc.history || []).length + 1, before,
+      critique: { score: before.score, issues: before.issues }, rewrote: true,
+      after: { title: res.script.title, score: res.score, issues: res.issues || [] } }]);
+    saveDraftMeta();
+    drawEditor();
+    toast("Rewritten — the issues are fixed and re-scored.", "ok");
+  } catch (e) { toast(esc(e.message), "bad"); }
+  finally { if (document.body.contains(btn)) btn.disabled = false; }
+}
+async function doctorPasses(btn) {
+  if (!S.draft) return;
+  const passes = +($("#doc-passes") || {}).value || 2;
+  btn.disabled = true;
+  try {
+    await post("/api/doctor/passes", { script: S.draft, passes });
+    toast(`Script Doctor running ${passes} pass(es)…`, "info");
+    tick();
+  } catch (e) { toast(esc(e.message), "bad"); btn.disabled = false; }
+}
+
+// ------------------------------------------------------------------ export / import (scene text + image text)
+function buildExport() {
+  const d = S.draft;
+  const multi = MULTI.has(d.style) || d.scenes.some(s => s.speaker === "B");
+  const scenes = d.scenes.map((s, i) => {
+    const o = { index: i, narration: s.narration, search_query: s.search_query, image_prompt: s.image_prompt };
+    if (multi) o.speaker = s.speaker || "A";
+    return o;
+  });
+  const rules = 'Return ONLY a JSON object, no other text: {"scenes":[{"narration":"the spoken line",'
+    + '"search_query":"1-4 English words naming concrete stock footage","image_prompt":"a vivid English prompt '
+    + 'for an AI image"}]}. Keep the same number of scenes, in the same order'
+    + (multi ? ", with the same speaker (A/B) for each." : ".");
+  return JSON.stringify({
+    instructions: "Rewrite these short vertical-video scenes so they hold viewers to the end. " + rules,
+    scenes,
+  }, null, 2);
+}
+function openDocModal(mode, text) {
+  const el = $("#doc-modal");
+  el.hidden = false;
+  const isExport = mode === "export";
+  el.innerHTML = `<div class="docmodal-bg" data-doc-close></div>
+    <section class="docmodal-panel" role="dialog" aria-modal="true" aria-label="${isExport ? "Export scenes" : "Import scenes"}">
+      <div class="docmodal-head"><b>${isExport ? "Export scenes" : "Import scenes"}</b></div>
+      <p class="hint">${isExport
+        ? "Paste this into another chat model. It returns JSON you can Import back — scene text and image text only."
+        : "Paste the JSON another model returned, e.g. {&quot;scenes&quot;:[{&quot;narration&quot;:…,&quot;search_query&quot;:…,&quot;image_prompt&quot;:…}]}."}</p>
+      <textarea id="doc-text" spellcheck="false" placeholder="${isExport ? "" : "Paste JSON here…"}">${esc(text || "")}</textarea>
+      <div class="actions end">
+        ${isExport
+          ? `<button class="btn sm" type="button" data-doc-copy>${I.copy}Copy</button><button class="btn sm" type="button" data-doc-download>${I.dl}Download</button>`
+          : `<button class="btn primary sm" type="button" data-doc-apply>Apply</button>`}
+        <button class="btn sm" type="button" data-doc-close>Close</button>
+      </div>
+    </section>`;
+}
+function closeDocModal() { const el = $("#doc-modal"); if (el) { el.hidden = true; el.innerHTML = ""; } }
+function downloadText(name, text) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+}
+function applyImport(text) {
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error("That isn't valid JSON."); }
+  const scenes = Array.isArray(data) ? data : (data.scenes || []);
+  if (!Array.isArray(scenes) || !scenes.length) throw new Error("No scenes found in that JSON.");
+  let changed = 0;
+  scenes.forEach((sc, i) => {
+    const idx = Number.isInteger(sc.index) ? sc.index : i;
+    const target = S.draft.scenes[idx];
+    if (!target) return;
+    if (typeof sc.narration === "string" && sc.narration.trim()) { target.narration = sc.narration.trim(); changed++; }
+    if (typeof sc.search_query === "string") target.search_query = sc.search_query.trim();
+    if (typeof sc.image_prompt === "string") target.image_prompt = sc.image_prompt.trim();
+    if (sc.speaker && ["A", "B"].includes(sc.speaker)) target.speaker = sc.speaker;
+  });
+  if (!changed) throw new Error("Nothing to import (no narration found).");
+  saveDraft();
+  return changed;
 }
 
 // Post-render drawer: the same scenes for a finished video.
@@ -748,8 +951,9 @@ function shotCard(vid, s) {
   const chip = !s.media ? `<span class="chip">none</span>`
     : generated ? `<span class="chip bad">no match</span>`
       : `<span class="chip">${esc(m.source)}${m.kind ? " · " + esc(m.kind) : ""}${m.credit ? " · " + esc(m.credit) : ""}</span>`;
+  const viewAttrs = s.preview ? ` data-view="/media/${vid}/${s.index}" data-kind="${esc(m.kind || "")}" data-title="Scene ${s.index + 1}"` : "";
   return `<div class="shot">
-    <div class="shot-thumb">${preview}</div>
+    <div class="shot-thumb${s.preview ? " zoom" : ""}"${viewAttrs}>${preview}</div>
     <div class="shot-body">
       <div class="shot-head"><b>Scene ${s.index + 1}</b>${chip}</div>
       <small>${esc((s.narration || "").slice(0, 150))}</small>
@@ -763,6 +967,8 @@ function shotCard(vid, s) {
 }
 function bindFootage(box, vid) {
   box.onclick = async e => {
+    const zoom = e.target.closest(".shot-thumb.zoom");
+    if (zoom && zoom.dataset.view) return openViewer(zoom.dataset.view, zoom.dataset.kind, zoom.dataset.title);
     const rep = e.target.closest("[data-replace]");
     if (rep) return openCand(`/api/videos/${vid}`, `/media/${vid}`, +rep.dataset.replace, rep.dataset.q || "",
                              () => loadFootage(vid));
@@ -775,11 +981,8 @@ function bindFootage(box, vid) {
     }
   };
 }
-async function manualPick(vid, n) {
-  const path = prompt("Path to an image or video on this computer:");
-  if (!path) return;
-  try { await post(`/api/videos/${vid}/scenes/${n}/manual`, { path }); toast("Footage replaced — re-render to apply it.", "ok"); loadFootage(vid); }
-  catch (e) { toast(esc(e.message), "bad"); }
+function manualPick(vid, n) {
+  chooseMediaFile(`/api/videos/${vid}`, n, () => loadFootage(vid));
 }
 
 // ------------------------------------------------------------------ candidate picker (shared modal)
@@ -820,10 +1023,20 @@ function drawCandList() {
     return;
   }
   list.innerHTML = CAND.cands.map((c, i) => `
-    <button class="cand" type="button" data-cand-pick="${i}">
-      <div class="cand-thumb">${c.thumb ? `<img src="${esc(c.thumb)}" alt="" loading="lazy">` : `<div class="ph">${esc(c.kind)}</div>`}</div>
+    <div class="cand">
+      <button class="cand-thumb" type="button" data-cand-view="${i}" aria-label="Preview">
+        ${c.thumb ? `<img src="${esc(c.thumb)}" alt="" loading="lazy">` : `<span class="ph">${esc(c.kind)}</span>`}
+        ${c.kind === "video" ? `<span class="play">${I.play}</span>` : ""}
+      </button>
       <div class="cand-meta"><b>${esc(c.source)}</b><small>${esc(c.kind)}${c.width ? ` · ${c.width}×${c.height}` : ""}${c.duration ? ` · ${Math.round(c.duration)}s` : ""}${c.credit ? ` · ${esc(c.credit)}` : ""}</small></div>
-    </button>`).join("");
+      <div class="cand-actions"><button class="btn sm" type="button" data-cand-pick="${i}">Use this</button></div>
+    </div>`).join("");
+}
+function candView(i) {
+  const c = CAND.cands[i];
+  if (!c) return;
+  if (c.local) return toast("A local file — the browser can't preview it here.", "info");
+  openViewer(c.kind === "video" ? c.url : (c.thumb || c.url), c.kind, `${c.source} · ${c.kind}`);
 }
 async function candPick(i) {
   const c = CAND.cands[i];
@@ -1096,8 +1309,14 @@ function bindSettings(set) {
     if (!b) return;
     const dir = sys.querySelector('[data-set="music_dir"]');
     const file = sys.querySelector('[data-set="music_file"]');
-    const start = b.dataset.pick === "dir" ? (dir ? dir.value.trim() : "") : ((file && file.value.trim()) || (dir ? dir.value.trim() : ""));
-    openPicker(b.dataset.pick, start);
+    if (b.dataset.pick === "dir") {
+      openPicker({ mode: "dir", kind: "dir", title: "Choose a music folder", start: dir ? dir.value.trim() : "",
+        onPick: v => { if (dir) dir.value = v; refreshMusic(); } });
+    } else {
+      openPicker({ mode: "file", kind: "audio", title: "Choose a background track",
+        start: (file && file.value.trim()) || (dir ? dir.value.trim() : ""),
+        onPick: v => { if (file) file.value = v; } });
+    }
   });
   btn.onclick = async () => {
     const body = {};
@@ -1142,56 +1361,113 @@ async function refreshMusic() {
   } catch { /* server restarting — leave the hint as is */ }
 }
 
-// ------------------------------------------------------------------ folder / file picker
+// ------------------------------------------------------------------ folder / file picker (reusable)
 let PICK = null;
 function joinPath(dir, name) {
   return /[\\/]$/.test(dir) ? dir + name : dir + (dir.includes("\\") && !dir.includes("/") ? "\\" : "/") + name;
 }
-async function openPicker(mode, start) {
-  PICK = { mode };
+// opts: {mode:"dir"|"file", kind:"dir"|"audio"|"media", title, start, onPick(value)}
+async function openPicker(opts) {
+  PICK = { mode: opts.mode || "file", kind: opts.kind || (opts.mode === "dir" ? "dir" : "audio"),
+           title: opts.title || (opts.mode === "dir" ? "Choose a folder" : "Choose a file"),
+           onPick: opts.onPick, filter: "", dirs: [], files: [], path: "", parent: "", home: "", error: "" };
   $("#picker").hidden = false;
-  await loadPicker(start || "");
+  await loadPicker(opts.start || "");
 }
 async function loadPicker(path) {
   if (!PICK) return;
   let data;
-  try { data = await get("/api/browse?path=" + encodeURIComponent(path)); }
+  try { data = await get(`/api/browse?kind=${encodeURIComponent(PICK.kind)}&path=${encodeURIComponent(path)}`); }
   catch (e) { return toast(esc(e.message), "bad"); }
+  PICK.path = data.path || ""; PICK.parent = data.parent || ""; PICK.home = data.home || "";
+  PICK.dirs = data.dirs || []; PICK.files = data.files || []; PICK.error = data.error || "";
+  PICK.filter = "";
+  drawPicker();
+}
+function pickerRows() {
+  const f = PICK.filter.toLowerCase();
   const rows = [];
-  if (data.parent) rows.push(`<button class="picker-row" type="button" data-nav="${esc(data.parent)}">${I.up}<b>Parent folder</b></button>`);
-  if (data.home && data.home !== data.path) rows.push(`<button class="picker-row" type="button" data-nav="${esc(data.home)}">${I.home}<b>Home</b></button>`);
-  (data.dirs || []).forEach(d => rows.push(`<button class="picker-row dir" type="button" data-nav="${esc(joinPath(data.path, d))}">${I.folder}<b>${esc(d)}</b></button>`));
-  if (PICK.mode === "file") (data.files || []).forEach(f => rows.push(`<button class="picker-row" type="button" data-file="${esc(f)}">${I.note}${esc(f)}</button>`));
-  $("#picker").innerHTML = `<div class="picker-bg" data-pk="close"></div>
-    <section class="picker-panel" role="dialog" aria-modal="true" aria-label="Choose a folder">
-      <div class="picker-head"><span class="path" title="${esc(data.path)}">${esc(data.path || "")}</span></div>
-      <div class="picker-list">${rows.join("") || `<div class="picker-empty">${esc(data.error || "Nothing here.")}</div>`}</div>
+  if (PICK.parent) rows.push(`<button class="picker-row" type="button" data-nav="${esc(PICK.parent)}">${I.up}<b>Parent folder</b></button>`);
+  if (PICK.home && PICK.home !== PICK.path) rows.push(`<button class="picker-row" type="button" data-nav="${esc(PICK.home)}">${I.home}<b>Home</b></button>`);
+  PICK.dirs.filter(d => d.toLowerCase().includes(f)).forEach(d =>
+    rows.push(`<button class="picker-row dir" type="button" data-nav="${esc(joinPath(PICK.path, d))}">${I.folder}<b>${esc(d)}</b></button>`));
+  if (PICK.mode === "file") PICK.files.filter(n => n.toLowerCase().includes(f)).forEach(n =>
+    rows.push(`<button class="picker-row" type="button" data-file="${esc(n)}">${I.note}<span>${esc(n)}</span></button>`));
+  return rows.join("") || `<div class="picker-empty">${esc(PICK.error || "Nothing here.")}</div>`;
+}
+function drawPicker() {
+  const el = $("#picker");
+  if (!el) return;
+  el.innerHTML = `<div class="picker-bg" data-pk="close"></div>
+    <section class="picker-panel" role="dialog" aria-modal="true" aria-label="${esc(PICK.title)}">
+      <div class="picker-head">
+        <div class="picker-title">${esc(PICK.title)}</div>
+        <div class="with-btn"><input type="text" id="pk-path" value="${esc(PICK.path)}" aria-label="Path"><button class="btn sm" type="button" data-pk-go>Go</button></div>
+        <div class="with-btn"><input type="search" id="pk-filter" value="${esc(PICK.filter)}" placeholder="Filter this folder…" aria-label="Filter"><button class="btn sm" type="button" data-pk="up"${PICK.parent ? "" : " disabled"}>Up</button></div>
+      </div>
+      <div class="picker-list">${pickerRows()}</div>
       <div class="picker-foot">
-        ${PICK.mode === "dir" ? `<button class="btn primary sm" type="button" data-use>Use this folder</button>` : `<span class="hint">Pick an audio file from the list.</span>`}
+        ${PICK.mode === "dir" ? `<button class="btn primary sm" type="button" data-use>Use this folder</button>`
+          : `<span class="hint">${PICK.kind === "audio" ? "Pick an audio file." : "Pick an image or video."}</span>`}
         <button class="btn sm" type="button" data-pk="close">Cancel</button>
       </div>
     </section>`;
 }
 function onPickerClick(e) {
   if (!PICK) return;
-  if (e.target.closest("[data-pk]")) return closePicker();
+  const close = e.target.closest("[data-pk]");
+  if (close) return close.dataset.pk === "up" ? (PICK.parent && loadPicker(PICK.parent)) : closePicker();
+  if (e.target.closest("[data-pk-go]")) { const p = $("#pk-path"); return loadPicker(p ? p.value.trim() : ""); }
   const nav = e.target.closest("[data-nav]");
   if (nav) return loadPicker(nav.dataset.nav);
   const file = e.target.closest("[data-file]");
-  if (file) { const mode = PICK.mode, v = joinPath(currentPickerPath(), file.dataset.file); closePicker(); return applyPick(mode, v); }
-  if (e.target.closest("[data-use]")) { const mode = PICK.mode, v = currentPickerPath(); closePicker(); return applyPick(mode, v); }
+  if (file) { const cb = PICK.onPick; const v = joinPath(PICK.path, file.dataset.file); closePicker(); return cb && cb(v); }
+  if (e.target.closest("[data-use]")) { const cb = PICK.onPick; const v = PICK.path; closePicker(); return cb && cb(v); }
 }
-const currentPickerPath = () => { const p = $("#picker .picker-head .path"); return p ? p.textContent : ""; };
-function applyPick(mode, value) {
-  const sys = $("#sys");
-  const el = sys && sys.querySelector(`[data-set="${mode === "dir" ? "music_dir" : "music_file"}"]`);
-  if (el) el.value = value;
-  if (mode === "dir") refreshMusic();
+function onPickerInput(e) {
+  if (!PICK || e.target.id !== "pk-filter") return;
+  PICK.filter = e.target.value;
+  const list = $("#picker .picker-list");
+  if (list) list.innerHTML = pickerRows();
+}
+function onPickerKey(e) {
+  if (!PICK || e.key !== "Enter") return;
+  if (e.target.id === "pk-path") { e.preventDefault(); loadPicker(e.target.value.trim()); }
+  else if (e.target.id === "pk-filter" && PICK.mode === "file") {
+    const first = $("#picker [data-file]");
+    if (first) { e.preventDefault(); first.click(); }
+  }
 }
 function closePicker() {
   const p = $("#picker");
   if (p) { p.hidden = true; p.innerHTML = ""; }
   PICK = null;
+}
+
+// ------------------------------------------------------------------ media viewer
+function openViewer(src, kind, title) {
+  const el = $("#viewer");
+  if (!el) return;
+  el.hidden = false;
+  el.innerHTML = `<div class="viewer-bg" data-view-close></div>
+    <section class="viewer-panel" role="dialog" aria-modal="true" aria-label="${esc(title || "Preview")}">
+      <div class="viewer-head"><b>${esc(title || "")}</b><button class="btn ghost sm" type="button" data-view-close aria-label="Close">${I.x}</button></div>
+      <div class="viewer-body">${kind === "video" ? `<video src="${esc(src)}" controls autoplay playsinline></video>` : `<img src="${esc(src)}" alt="">`}</div>
+    </section>`;
+}
+function closeViewer() {
+  const el = $("#viewer");
+  if (!el) return;
+  $$("video", el).forEach(v => v.pause());
+  el.hidden = true;
+  el.innerHTML = "";
+}
+function chooseMediaFile(api, n, after) {
+  openPicker({ mode: "file", kind: "media", title: "Choose an image or video", start: "",
+    onPick: async v => {
+      try { await post(`${api}/scenes/${n}/manual`, { path: v }); toast("Footage set — it will be used when you render.", "ok"); after && after(); }
+      catch (e) { toast(esc(e.message), "bad"); }
+    } });
 }
 
 boot();

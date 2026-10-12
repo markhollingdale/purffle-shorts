@@ -149,6 +149,48 @@ def test_settings_clamps_numbers(server):
     assert res["values"]["caption_max_words"] == 20 and res["values"]["music_volume"] == 1.0
 
 
+class _DocLLM:
+    label = "fake:model"
+
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), 0
+
+    def complete_json(self, system, user, schema=None, max_tokens=4000):
+        r = self.replies[min(self.calls, len(self.replies) - 1)]
+        self.calls += 1
+        return r
+
+
+def test_doctor_critique_and_rewrite_endpoints(server):
+    app, port = server
+    app.settings.target_seconds = 8          # ~20-word target
+    script = {"title": "T", "hook_text": "H", "cast": [],
+              "scenes": [{"speaker": "A", "narration": "one two three four five", "search_query": "cats",
+                          "image_prompt": "a cat"}], "description": "d", "hashtags": ["#c"], "tags": ["c"],
+              "category": "pets"}
+    app.studio._llm = _DocLLM([{"score": 55, "issues": ["weak hook", "flat ending"]}])
+    res = json.loads(req(port, "POST", "/api/doctor/critique", {"script": script}, app.token)[2])
+    assert res["score"] == 55 and res["issues"] == ["weak hook", "flat ending"]
+
+    better = dict(script, title="Better", scenes=[dict(script["scenes"][0],
+                  narration="one two three four five six seven eight nine ten eleven twelve")])
+    app.studio._llm = _DocLLM([{"score": 88, "issues": [], "script": better}])
+    status, _, body = req(port, "POST", "/api/doctor/rewrite",
+                          {"script": script, "score": 40, "issues": ["weak hook"]}, app.token)
+    assert status == 200
+    assert json.loads(body)["script"]["title"] == "Better" and json.loads(body)["score"] == 88
+
+
+def test_doctor_needs_a_model(server):
+    app, port = server
+    app.studio._llm = None
+    app.studio.s = app.studio.s.with_overrides(offline=True)
+    code, _, body = req(port, "POST", "/api/doctor/critique",
+                        {"script": {"title": "T", "scenes": [{"narration": "hi", "search_query": "c",
+                                                              "image_prompt": "c"}]}}, app.token)
+    assert code == 400 and "error" in json.loads(body)
+
+
 def test_settings_expose_music_fields(server):
     app, port = server
     kinds = {f["attr"]: f["kind"] for f in json.loads(req(port, "GET", "/api/settings")[2])["fields"]}

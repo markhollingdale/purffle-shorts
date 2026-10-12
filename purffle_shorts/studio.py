@@ -10,6 +10,7 @@ so other websites can't drive it from your browser.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -24,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote, unquote_plus, urlparse
 
 from . import __version__
 from .config import ASPECTS, Settings, aspect_resolution, load_env
@@ -36,6 +38,9 @@ STATIC = {"app.js": "text/javascript; charset=utf-8", "app.css": "text/css; char
           "icon.svg": "image/svg+xml"}
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 AUDIO_EXT = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".opus", ".flac", ".wma", ".aiff", ".aif"}
+# Hosts we will pull a first-frame thumbnail from (keeps the thumbnail endpoint from fetching anything).
+THUMB_HOSTS = ("videos.pexels.com", "images.pexels.com", "cdn.pixabay.com", "i.vimeocdn.com", "pixabay.com")
+_THUMB_LOCK = threading.Semaphore(3)
 
 
 @dataclass
@@ -241,6 +246,17 @@ class StudioServer:
             r = studio.rerender(int(p["id"]), upload=bool(p.get("upload")))
             job.result = _result(r)
             return r.ok
+        if job.kind == "doctor":
+            from .script import run_doctor
+            llm = studio.llm
+            if llm is None:
+                raise RuntimeError("No AI model is configured for the Script Doctor.")
+            script = script_from_data(p.get("script") or {}, s)
+            final, history = run_doctor(llm, script, s, int(p.get("passes") or 2),
+                                        on_pass=lambda e: setattr(job, "message", f"pass {e['pass']}"))
+            job.result = {"script": final.to_dict(), "history": history}
+            job.stage, job.pct = "done", 100
+            return True
         # make
         script = script_from_data(p["script"], s) if isinstance(p.get("script"), dict) else None
         langs = p.get("also_langs")
@@ -430,8 +446,12 @@ class StudioServer:
                 files = []
         return {"dir": str(p) if raw else "", "exists": exists, "count": len(files), "files": files[:1000]}
 
-    def browse(self, path: str = "") -> dict:
-        """List sub-folders and audio files of a directory so the settings form can pick a music folder/file."""
+    def browse(self, path: str = "", kind: str = "audio") -> dict:
+        """List a folder's sub-folders and files, for the folder/file picker.
+
+        ``kind`` selects which files to list: ``audio`` (music), ``media`` (images and videos) or ``dir``
+        (folders only)."""
+        from .media import IMAGE_EXT, VIDEO_EXT
         raw = (path or "").strip()
         if not raw:
             start = Path(self.settings.music_dir).expanduser()
@@ -441,6 +461,7 @@ class StudioServer:
             p = p.parent
         if p.exists():
             p = p.resolve()
+        exts = {"audio": AUDIO_EXT, "media": VIDEO_EXT | IMAGE_EXT}.get(kind, set())
         dirs: list[str] = []
         files: list[str] = []
         error = ""
@@ -448,13 +469,13 @@ class StudioServer:
             try:
                 entries = sorted(p.iterdir(), key=lambda e: e.name.lower())
                 dirs = [e.name for e in entries if e.is_dir() and not e.name.startswith(".")]
-                files = [e.name for e in entries if e.is_file() and e.suffix.lower() in AUDIO_EXT]
+                files = [e.name for e in entries if e.is_file() and e.suffix.lower() in exts]
             except OSError as e:
                 error = str(e)
         else:
             error = f"not a folder: {p}"
         home = Path.home()
-        return {"path": str(p), "parent": str(p.parent) if p.parent != p else "",
+        return {"path": str(p), "parent": str(p.parent) if p.parent != p else "", "kind": kind,
                 "home": str(home) if home.is_dir() else "", "dirs": dirs, "files": files, "error": error}
 
     # ------------------------------------------------------------------ per-scene footage
@@ -523,9 +544,60 @@ class StudioServer:
         if not q:
             raise ValueError("give a search query")
         cands = Visuals(self.settings, used_keys=set()).candidates(q)
-        return {"query": q, "candidates": [{**c.to_dict(), "local": c.source == "local",
-                                            "path": str(c.path) if c.source == "local" and c.path else ""}
-                                           for c in cands]}
+        out = []
+        for c in cands:
+            d = c.to_dict()
+            if c.kind == "video" and not d.get("thumb") and c.url:
+                d["thumb"] = "/api/thumb?url=" + quote(c.url, safe="")   # first frame, fetched on demand
+            d["local"] = c.source == "local"
+            d["path"] = str(c.path) if c.source == "local" and c.path else ""
+            out.append(d)
+        return {"query": q, "candidates": out}
+
+    # ------------------------------------------------------------------ Script Doctor
+    def _doctor_llm(self):
+        llm = self.studio.llm
+        if llm is None:
+            raise ValueError("No AI model is configured — add a key or run Ollama to use the Script Doctor.")
+        return llm
+
+    def doctor_critique(self, script_data: dict) -> dict:
+        from .script import critique_script, script_from_data
+        script = script_from_data(script_data or {}, self.settings)
+        score, issues = critique_script(self._doctor_llm(), script, self.settings)
+        return {"score": score, "issues": issues}
+
+    def doctor_rewrite(self, script_data: dict, score, issues) -> dict:
+        from .script import rewrite_script, script_from_data
+        script = script_from_data(script_data or {}, self.settings)
+        better = rewrite_script(self._doctor_llm(), script, self.settings, score,
+                                [str(i)[:300] for i in (issues or [])][:5])
+        return {"script": better.to_dict(), "score": better.score, "issues": better.review}
+
+    def candidate_thumb(self, url: str) -> Path | None:
+        """Extract (and cache) the first frame of a stock video so the picker can show a real thumbnail."""
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https") or not any(
+                host == h or host.endswith("." + h) for h in THUMB_HOSTS):
+            return None
+        dest = self.settings.data_path / "thumbs" / (hashlib.sha1(url.encode()).hexdigest() + ".jpg")
+        if dest.exists() and dest.stat().st_size > 0:
+            return dest
+        from . import ffmpeg
+        with _THUMB_LOCK:
+            if dest.exists() and dest.stat().st_size > 0:
+                return dest
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            for at in ("0.2", "0"):
+                try:
+                    ffmpeg.run(["-ss", at, "-i", url, "-frames:v", "1", "-vf", "scale=270:-2", str(dest)],
+                               label="thumbnail", timeout=60)
+                    if dest.exists() and dest.stat().st_size > 0:
+                        break
+                except Exception:
+                    continue
+        return dest if dest.exists() and dest.stat().st_size > 0 else None
 
     def scene_search(self, vid: int, n: int, query: str) -> dict:
         if self._rec_folder(vid) is None:
@@ -657,7 +729,6 @@ def _handler(app: StudioServer, bound_host: str):
                 return self._send(421, b"wrong host", "text/plain")
             path, _, qs = self.path.partition("?")
             params = dict(x.partition("=")[::2] for x in qs.split("&") if x)
-            from urllib.parse import unquote_plus
             params = {k: unquote_plus(v) for k, v in params.items()}
             if path == "/":
                 html = (WEB / "index.html").read_text(encoding="utf-8")
@@ -665,7 +736,8 @@ def _handler(app: StudioServer, bound_host: str):
                 return self._send(200, html.encode(), "text/html; charset=utf-8", {
                     "Content-Security-Policy": "default-src 'self'; img-src 'self' data: https://i.ytimg.com "
                                                "https://images.pexels.com https://cdn.pixabay.com https://pixabay.com; "
-                                               "media-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+                                               "media-src 'self' https://videos.pexels.com https://cdn.pixabay.com; "
+                                               "connect-src 'self'; frame-ancestors 'none'",
                     "X-Frame-Options": "DENY"})
             m = re.fullmatch(r"/static/([\w.-]+)", path)
             if m and m.group(1) in STATIC:
@@ -678,8 +750,11 @@ def _handler(app: StudioServer, bound_host: str):
                 return self._json(app.settings_values())
             if path == "/api/music":
                 return self._json(app.music_info(params.get("dir", "")))
+            if path == "/api/thumb":
+                f = app.candidate_thumb(params.get("url", ""))
+                return self._file(f) if f else self._send(404, b"no thumbnail", "text/plain")
             if path == "/api/browse":
-                return self._json(app.browse(params.get("path", "")))
+                return self._json(app.browse(params.get("path", ""), params.get("kind", "audio")))
             if path == "/api/videos":
                 return self._json(app.videos(params.get("status", ""), params.get("q", "")))
             m = re.fullmatch(r"/api/videos/(\d+)", path)
@@ -790,6 +865,20 @@ def _handler(app: StudioServer, bound_host: str):
                     return self._json(app.save_settings(body))
                 except ValueError as e:
                     return self._json({"error": str(e)}, 400)
+            if path == "/api/doctor/critique":
+                try:
+                    return self._json(app.doctor_critique(body.get("script") or {}))
+                except Exception as e:
+                    return self._json({"error": str(e)}, 400)
+            if path == "/api/doctor/rewrite":
+                try:
+                    return self._json(app.doctor_rewrite(body.get("script") or {}, body.get("score"),
+                                                         body.get("issues") or []))
+                except Exception as e:
+                    return self._json({"error": str(e)}, 400)
+            if path == "/api/doctor/passes":
+                label = f"Script Doctor ×{int(body.get('passes') or 2)}"
+                return self._json({"job": app.submit("doctor", body, label).id})
             if path in ("/api/make", "/api/draft"):
                 kind = "make" if path == "/api/make" else "draft"
                 label = (body.get("script") or {}).get("title") if isinstance(body.get("script"), dict) else None

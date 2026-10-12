@@ -25,6 +25,8 @@ class FakeLLM:
         self.calls.append({"system": system, "user": user, "schema": schema})
         if self.error:
             raise self.error
+        if isinstance(self.reply, list):          # one canned reply per call
+            return self.reply[min(len(self.calls) - 1, len(self.reply) - 1)]
         return self.reply(user) if callable(self.reply) else self.reply
 
 
@@ -91,7 +93,20 @@ def test_doctor_rewrite_is_used_when_sane():
     out = review_script(llm, _draft(), settings)
     assert out.title == "Better" and out.score == 91 and out.review[0] == "Weak hook"
     assert out.category == "pets" and out.style == "facts"
-    assert llm.calls[0]["schema"]["required"] == ["score", "issues", "script"]
+    assert len(llm.calls) == 2                                    # a critique, then a rewrite
+    assert llm.calls[0]["schema"]["required"] == ["score", "issues"]
+    assert llm.calls[1]["schema"]["required"] == ["score", "issues", "script"]
+    assert "Weak hook" in llm.calls[1]["user"]                    # the rewrite is driven by the issues found
+
+
+def test_doctor_rewrite_reports_its_own_score_and_issues():
+    settings = Settings(target_seconds=16)
+    better = {"title": "Better", "hook_text": "WOW", "cast": [], "scenes": _scenes(5, 9), "description": "d",
+              "hashtags": ["#cats"], "tags": ["cats"], "category": "pets"}
+    llm = FakeLLM([{"score": 41, "issues": ["Weak hook", "Vague ending"]},
+                   {"score": 88, "issues": ["Nothing major left"], "script": better}])
+    out = review_script(llm, _draft(), settings)
+    assert out.title == "Better" and out.score == 88 and out.review == ["Nothing major left"]
 
 
 def test_doctor_rewrite_with_wrong_length_is_ignored():

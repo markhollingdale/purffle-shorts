@@ -65,7 +65,7 @@ It is made for **content creators**, **faceless YouTube channels**, **educators*
 
 **AI scriptwriting**
 - One structured LLM call returns the whole Short: hook, scenes, a footage search and an image prompt per scene, title, description, hashtags, tags and YouTube category.
-- **Script Doctor**: a second AI pass scores the draft 0–100 for retention (hook, pacing, payoff, accuracy risk), lists what is weak and rewrites it. The score is stored with every video.
+- **Script Doctor**: two AI passes — a critique that scores the draft 0–100 for retention (hook, pacing, payoff, accuracy risk) and lists what is weak, then a rewrite driven by those exact issues. In the Studio you can run **Critique** and **Rewrite** separately, **edit the issues** before rewriting, run several automatic passes with a kept **history**, and **export/import** the scene text and image text to/from another chat model. The score and any remaining issues describe the script you actually get, and the score is stored with every video.
 - **12 providers**: OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, DeepSeek, Mistral, Together AI, xAI Grok, Ollama, LM Studio, or any OpenAI-compatible URL. List backups in `LLM_FALLBACKS` and they are tried in order if the main one fails.
 - **11 formats**: facts, story, listicle, myth-busting, quiz, explainer, motivational, news, **two-voice dialogue**, **text-message story** and **Reddit-style story** (a post card while the title is read, then the story with captions).
 - Draft first and edit any line in the Studio, or write a script yourself and render it with `--script`, with no LLM call.
@@ -464,7 +464,7 @@ python -m purffle_shorts studio        # opens http://127.0.0.1:8765
 
 - **Create:** topic, web page, idea queue or "surprise me"; eleven formats; language, length, aspect, voices, caption style (with a preview), grade, transitions, footage sources, model, Script Doctor mode, extra languages, upload.
 - **Draft, then edit:** the AI writes and reviews the script, you see the retention score and the problems it found, change any line, reorder or add scenes, switch speakers, then render exactly that script.
-- **Footage while you draft:** drafting also picks each scene's image/video. Every scene shows its clip, the search phrase used, and **Search** (a grid of fresh results) or **Use my file** — so you fix a bad match before rendering, and the render reuses exactly what you picked.
+- **Footage while you draft:** drafting also picks each scene's image/video. Every scene shows its clip, the search phrase used, and **Search** (a grid of fresh results, each with a **play** preview and **Use this**) or **Use my file** (a built-in browser for images and videos). Click any scene's thumbnail to open it full size. You fix a bad match before rendering, and the render reuses exactly what you picked.
 - **Live progress** through topic, script, review, voice, footage, captions, render and upload, with the log.
 - **Library:** thumbnails with status, format, language and score; open one to play it, download the MP4 or captions, upload it, edit and re-render it, swap a scene's footage (see below), or delete it.
 - **Footage:** open a video and every scene appears with its current clip; **Replace** searches Pexels/Pixabay for a better one, **Use my file** takes an image or video from your computer, and **Re-render** rebuilds the video in place using the saved script and all the other scenes.
