@@ -702,6 +702,14 @@ def _handler(app: StudioServer, bound_host: str):
         def log_message(self, fmt, *args):  # keep the console for pipeline logs
             pass
 
+        def handle_one_request(self):
+            # A browser closing the media viewer / seeking a video / aborting an image aborts the socket.
+            # That is normal, not an error: swallow it instead of dumping a traceback from socketserver.
+            try:
+                super().handle_one_request()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+                self.close_connection = True
+
         def _host_ok(self) -> bool:
             if not loopback:
                 return True
@@ -842,7 +850,7 @@ def _handler(app: StudioServer, bound_host: str):
                         break
                     try:
                         self.wfile.write(chunk)
-                    except (BrokenPipeError, ConnectionResetError):
+                    except ConnectionError:   # client went away (aborted/seeking): stop quietly
                         return
                     left -= len(chunk)
 

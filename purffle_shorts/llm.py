@@ -156,6 +156,12 @@ def extract_json(text: str) -> dict[str, Any]:
     raise LLMError(f"Model did not return JSON: {text[:200]!r}")
 
 
+def _ran_out_of_room(e: Exception) -> bool:
+    """True when a reply was cut off by the token budget (so a bigger budget may help)."""
+    s = str(e)
+    return "finish_reason=length" in s or "stop_reason=max_tokens" in s
+
+
 class Provider:
     name: str = ""
     model: str = ""
@@ -316,16 +322,23 @@ class LLM:
                       max_tokens: int = 4000) -> dict[str, Any]:
         errors = []
         for p in self.providers:
-            def _call(p=p):
-                text = p.complete(system, user, schema=schema if schema is not None else {}, max_tokens=max_tokens,
-                                  temperature=self.settings.llm_temperature)
-                return extract_json(text)
-            try:
-                result = with_retries(_call, attempts=2, base_delay=3, label=f"LLM {p}")
-                if p is not self.providers[0]:
-                    log.info("Used fallback LLM %s", p)
-                return result
-            except Exception as e:  # try the next provider
-                errors.append(f"{p}: {e}")
-                log.warning("LLM %s failed: %s", p, e)
+            budget = max_tokens
+            for escalated in (False, True):   # second try gives a reasoning model room to finish
+                def _call(p=p, b=budget):
+                    text = p.complete(system, user, schema=schema if schema is not None else {}, max_tokens=b,
+                                      temperature=self.settings.llm_temperature)
+                    return extract_json(text)
+                try:
+                    result = with_retries(_call, attempts=2, base_delay=3, label=f"LLM {p}")
+                    if p is not self.providers[0]:
+                        log.info("Used fallback LLM %s", p)
+                    return result
+                except Exception as e:  # try the next provider
+                    if not escalated and _ran_out_of_room(e):
+                        budget = max(budget * 4, 16000)
+                        log.warning("%s ran out of room before replying; retrying with max_tokens=%d", p, budget)
+                        continue
+                    errors.append(f"{p}: {e}")
+                    log.warning("LLM %s failed: %s", p, e)
+                    break
         raise LLMError("All LLM providers failed:\n  " + "\n  ".join(errors))

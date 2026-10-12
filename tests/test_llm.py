@@ -4,6 +4,7 @@ import types
 import pytest
 
 from purffle_shorts import llm as L
+from purffle_shorts import utils as U
 from purffle_shorts.config import Settings
 from purffle_shorts.utils import PermanentError
 
@@ -74,6 +75,25 @@ def test_json_mode_is_dropped_when_unsupported(monkeypatch):
     p = L.OpenAICompatible(L.PRESETS["groq"], "m", "k", "https://x/v1")
     assert p.complete("s", "u", schema={}) == '{"x": 1}'
     assert "response_format" in calls[0] and "response_format" not in calls[1]
+
+
+def test_llm_retries_with_a_bigger_budget_when_cut_off(monkeypatch):
+    seen = []
+
+    class Cut(L.Provider):
+        name, model = "cut", "m"
+
+        def complete(self, system, user, *, schema=None, temperature=0.9, max_tokens=4000):
+            seen.append(max_tokens)
+            if max_tokens < 16000:      # a reasoning model that spent the whole budget and returned nothing
+                raise L.LLMError(f"{self}: empty reply (finish_reason=length)")
+            return '{"ok": true}'
+
+    monkeypatch.setattr(U.time, "sleep", lambda *_: None)
+    chain = object.__new__(L.LLM)
+    chain.settings, chain.providers = Settings(), [Cut()]
+    assert chain.complete_json("s", "u", max_tokens=2000) == {"ok": True}
+    assert seen == [2000, 2000, 16000]
 
 
 def test_fallback_chain_uses_next_provider():

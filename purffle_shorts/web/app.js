@@ -867,8 +867,6 @@ async function doctorPasses(btn) {
 function buildExport() {
   const d = S.draft;
   const multi = MULTI.has(d.style) || d.scenes.some(s => s.speaker === "B");
-  const secs = S.form.duration || 40;
-  const targetWords = Math.round(secs * 2.6);
   const scenes = d.scenes.map((s, i) => {
     const o = { index: i, narration: s.narration, search_query: s.search_query, image_prompt: s.image_prompt };
     if (multi) o.speaker = s.speaker || "A";
@@ -876,18 +874,33 @@ function buildExport() {
   });
   // the original topic the user typed (not the script's normalised subject)
   const topic = (S.form.mode === "topic" && (S.form.topic || "").trim()) || d.topic || "";
-  const rules = 'Return ONLY a JSON object, no other text: {"scenes":[{"narration":"the spoken line",'
+  // target = the script's current spoken word count, so the model can't balloon the length
+  const curWords = d.scenes.reduce((n, s) => n + words(s.narration), 0) || Math.round((S.form.duration || 40) * 2.6);
+  const lo = Math.max(1, curWords - 5);
+  const hi = curWords + 5;
+  const shape = 'Return ONLY a JSON object, no other text: {"scenes":[{"narration":"the spoken line",'
     + '"search_query":"1-4 English words naming concrete stock footage","image_prompt":"a vivid English prompt '
-    + 'for an AI image"}]}. Keep the total spoken length about the same — roughly ' + targetWords + ' words (~'
-    + secs + ' seconds). You may rework, split or merge scenes as long as the length stays close'
-    + (multi ? ", and keep a speaker (A/B) on each scene." : ".")
-    + ' Output raw, valid JSON only. Do not use Markdown code fences, XML tags, escape wrappers, or any '
+    + 'for an AI image"}]}' + (multi ? ', with a "speaker":"A"|"B" on each scene.' : '.');
+  const pacing = 'Script length and pacing rules:\n'
+    + '* Preserve the original total spoken word count as closely as possible.\n'
+    + `* Target ${curWords} words, with an absolute range of ${lo}-${hi} words across all scenes combined.\n`
+    + '* Count only the words in the "narration" fields, not search queries or image prompts.\n'
+    + '* Do not add extra introductory hooks, repeated phrases, rhetorical questions, explanations, or filler '
+    + 'that increase the word count.\n'
+    + '* Improve retention through stronger wording, curiosity gaps, suspense, and scene transitions rather '
+    + 'than adding words.\n'
+    + '* Keep each scene concise and suitable for a fast-paced vertical video.\n'
+    + '* Before returning the JSON, check the combined narration word count and revise it if it falls outside '
+    + 'the permitted range.\n'
+    + 'You may rework, split or merge scenes as long as the total stays within the range.';
+  const json = 'Output raw, valid JSON only. Do not use Markdown code fences, XML tags, escape wrappers, or any '
     + 'formatting around the JSON. Ensure the response can be parsed directly by JSON.parse() without any '
     + 'preprocessing.';
   return JSON.stringify({
     topic,
     instructions: "Rewrite these short vertical-video scenes so they hold viewers to the end. "
-      + 'The scenes were generated from the "topic" field — use it as context. ' + rules,
+      + 'The scenes were generated from the "topic" field — use it as context.\n\n' + shape + '\n\n'
+      + pacing + '\n\n' + json,
     scenes,
   }, null, 2);
 }
