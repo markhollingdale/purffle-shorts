@@ -276,7 +276,7 @@ details.more > summary + * { margin-top: 12px; }
 .doctor { border: 1px solid var(--line); border-radius: 12px; background: var(--bg); padding: 12px; margin-bottom: 14px; }
 .doctor h2 { margin: 0; }
 .doctor .actions { gap: 6px; }
-.doctor textarea { min-height: 66px; }
+.doctor textarea { min-height: 165px; }
 .auto-passes { display: inline-flex; align-items: center; gap: 6px; }
 .auto-passes input { width: 58px; padding: 6px 8px; }
 .doc-history { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; }
@@ -299,7 +299,9 @@ details.more > summary + * { margin-top: 12px; }
 .scene-thumb img, .scene-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .scene-thumb .ph { color: var(--faint); font-size: 10.5px; text-align: center; }
 .scene-foot .grow { flex: 1; min-width: 0; }
+.scene-foot .im { margin-top: 6px; font-size: 13px; }
 .scene-foot .match { display: block; color: var(--faint); font-size: 12px; margin-top: 6px; }
+.topic-input { min-height: 120px; }
 
 /* ---------- queue ---------- */
 .jobs { display: flex; flex-direction: column; gap: 12px; }

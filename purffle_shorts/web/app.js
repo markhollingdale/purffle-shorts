@@ -371,7 +371,7 @@ function drawForm() {
   <section class="card">
     <h2>What's it about?</h2>
     <div class="src-tabs">${seg("mode", [["topic", "Topic"], ["url", "Web page"], ["queue", "Idea queue"], ["auto", "Surprise me"]], f.mode)}</div>
-    ${f.mode === "topic" ? `<div class="field"><input type="text" data-f="topic" value="${esc(f.topic)}" placeholder="e.g. Why octopuses have three hearts" aria-label="Topic"><p class="hint">Be as broad or specific as you like — the AI finds the surprising angle.</p></div>`
+    ${f.mode === "topic" ? `<div class="field"><label>Topic</label><textarea class="topic-input" data-f="topic" placeholder="e.g. Why octopuses have three hearts" aria-label="Topic">${esc(f.topic)}</textarea><p class="hint">Be as broad or specific as you like — the AI finds the surprising angle.</p></div>`
     : f.mode === "url" ? `<div class="field"><input type="url" data-f="url" value="${esc(f.url)}" placeholder="https://… an article, blog post or Wikipedia page" aria-label="Web page"><p class="hint">The page's text becomes the script's source material.</p></div>`
     : f.mode === "queue" ? `<p class="hint">Uses the oldest idea from your queue (${i_ideas()} waiting) — plan more on the <a href="#ideas">Ideas</a> page.</p>`
     : `<p class="hint">Picks a fresh topic from your niches and topic sources in .env.</p>`}
@@ -557,9 +557,10 @@ function drawEditor() {
             <div class="scene-thumb" data-thumb="${n}"><span class="ph">…</span></div>
             <div class="grow">
               <div class="with-btn"><input type="text" data-i="${n}" data-s="search_query" value="${esc(s.search_query)}" placeholder="footage search" aria-label="Footage search"><button class="btn sm" type="button" data-find="${n}">${I.search}Search</button><button class="btn ghost sm" type="button" data-file="${n}" title="Use an image or video from this computer">${I.upload}</button></div>
+              <input class="im" type="text" data-i="${n}" data-s="image_prompt" value="${esc(s.image_prompt || "")}" placeholder="AI image prompt (for AI-image scenes)" aria-label="AI image prompt">
               <div class="match" data-match="${n}"></div>
             </div>
-          </div>` : `<input type="text" data-i="${n}" data-s="search_query" value="${esc(s.search_query)}" placeholder="footage search" aria-label="Footage search">`}
+          </div>` : `<input type="text" data-i="${n}" data-s="search_query" value="${esc(s.search_query)}" placeholder="footage search" aria-label="Footage search"><input class="im" type="text" data-i="${n}" data-s="image_prompt" value="${esc(s.image_prompt || "")}" placeholder="AI image prompt (for AI-image scenes)" aria-label="AI image prompt">`}
           <div class="row">
             ${multi ? `<button class="btn ghost sm" type="button" data-act="speaker" data-i="${n}" title="Switch speaker">A/B</button>` : ""}
             <span class="tools">
@@ -866,6 +867,8 @@ async function doctorPasses(btn) {
 function buildExport() {
   const d = S.draft;
   const multi = MULTI.has(d.style) || d.scenes.some(s => s.speaker === "B");
+  const secs = S.form.duration || 40;
+  const targetWords = Math.round(secs * 2.6);
   const scenes = d.scenes.map((s, i) => {
     const o = { index: i, narration: s.narration, search_query: s.search_query, image_prompt: s.image_prompt };
     if (multi) o.speaker = s.speaker || "A";
@@ -873,10 +876,13 @@ function buildExport() {
   });
   const rules = 'Return ONLY a JSON object, no other text: {"scenes":[{"narration":"the spoken line",'
     + '"search_query":"1-4 English words naming concrete stock footage","image_prompt":"a vivid English prompt '
-    + 'for an AI image"}]}. Keep the same number of scenes, in the same order'
-    + (multi ? ", with the same speaker (A/B) for each." : ".");
+    + 'for an AI image"}]}. Keep the total spoken length about the same — roughly ' + targetWords + ' words (~'
+    + secs + ' seconds). You may rework, split or merge scenes as long as the length stays close'
+    + (multi ? ", and keep a speaker (A/B) on each scene." : ".");
   return JSON.stringify({
-    instructions: "Rewrite these short vertical-video scenes so they hold viewers to the end. " + rules,
+    topic: d.topic,
+    instructions: "Rewrite these short vertical-video scenes so they hold viewers to the end. "
+      + "The scenes were generated from the topic below — use it as context. " + rules,
     scenes,
   }, null, 2);
 }
