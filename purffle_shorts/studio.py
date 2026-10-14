@@ -538,11 +538,20 @@ class StudioServer:
     def draft_media_file(self, draft_id: str, n: int) -> Path | None:
         return self._media_file(self._draft_dir(draft_id), n)
 
-    def _scene_search(self, n: int, query: str) -> dict:
+    def _scene_search(self, folder: Path | None, n: int, query: str) -> dict:
         from .media import Visuals
         q = (query or "").strip()
         if not q:
             raise ValueError("give a search query")
+        # Mark candidates already used: in other scenes of this video, or in a past video (history).
+        used = set(self.studio.history.used_media())
+        current = ""
+        if folder is not None:
+            for idx, m in self.studio._load_media_map(folder).items():
+                if idx == n:
+                    current = m.key
+                else:
+                    used.add(m.key)
         cands = Visuals(self.settings, used_keys=set()).candidates(q)
         out = []
         for c in cands:
@@ -551,6 +560,8 @@ class StudioServer:
                 d["thumb"] = "/api/thumb?url=" + quote(c.url, safe="")   # first frame, fetched on demand
             d["local"] = c.source == "local"
             d["path"] = str(c.path) if c.source == "local" and c.path else ""
+            d["current"] = bool(current) and c.key == current
+            d["used"] = (not d["current"]) and c.key in used
             out.append(d)
         return {"query": q, "candidates": out}
 
@@ -600,14 +611,16 @@ class StudioServer:
         return dest if dest.exists() and dest.stat().st_size > 0 else None
 
     def scene_search(self, vid: int, n: int, query: str) -> dict:
-        if self._rec_folder(vid) is None:
+        folder = self._rec_folder(vid)
+        if folder is None:
             raise ValueError("no such video")
-        return self._scene_search(n, query)
+        return self._scene_search(folder, n, query)
 
     def draft_search(self, draft_id: str, n: int, query: str) -> dict:
-        if not self._draft_dir(draft_id).is_dir():
+        folder = self._draft_dir(draft_id)
+        if not folder.is_dir():
             raise ValueError("no such draft")
-        return self._scene_search(n, query)
+        return self._scene_search(folder, n, query)
 
     def _scene_pick(self, folder: Path, n: int, item: dict) -> dict:
         from .media import MediaItem, Visuals

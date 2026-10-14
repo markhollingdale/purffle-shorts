@@ -1059,16 +1059,21 @@ function drawCandList() {
     list.innerHTML = `<div class="empty"><b>No results</b>Try different words, or add a free Pexels/Pixabay key in <a href="#system">System</a>.</div>`;
     return;
   }
-  list.innerHTML = CAND.cands.map((c, i) => `
-    <div class="cand">
+  CAND.cands.sort((a, b) => candRank(a) - candRank(b));   // current first, then fresh, used last
+  list.innerHTML = CAND.cands.map((c, i) => {
+    const badge = c.current ? `<span class="chip accent">current</span>`
+      : c.used ? `<span class="chip" title="Already used by another scene or a past video">used</span>` : "";
+    return `<div class="cand${c.used ? " used" : ""}">
       <button class="cand-thumb" type="button" data-cand-view="${i}" aria-label="Preview">
         ${c.thumb ? `<img src="${esc(c.thumb)}" alt="" loading="lazy">` : `<span class="ph">${esc(c.kind)}</span>`}
         ${c.kind === "video" ? `<span class="play">${I.play}</span>` : ""}
       </button>
-      <div class="cand-meta"><b>${esc(c.source)}</b><small>${esc(c.kind)}${c.width ? ` · ${c.width}×${c.height}` : ""}${c.duration ? ` · ${Math.round(c.duration)}s` : ""}${c.credit ? ` · ${esc(c.credit)}` : ""}</small></div>
+      <div class="cand-meta"><b>${esc(c.source)}</b>${badge}<small>${esc(c.kind)}${c.width ? ` · ${c.width}×${c.height}` : ""}${c.duration ? ` · ${Math.round(c.duration)}s` : ""}${c.credit ? ` · ${esc(c.credit)}` : ""}</small></div>
       <div class="cand-actions"><button class="btn sm" type="button" data-cand-pick="${i}">Use this</button></div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
+const candRank = c => c.current ? 0 : c.used ? 2 : 1;
 function candView(i) {
   const c = CAND.cands[i];
   if (!c) return;

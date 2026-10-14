@@ -248,8 +248,11 @@ details.more > summary + * { margin-top: 12px; }
 .cand-thumb .ph { color: var(--faint); font-size: 12px; }
 .cand-thumb .play { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; background: rgba(0, 0, 0, .25); }
 .cand-thumb .play svg { width: 36px; height: 36px; padding: 7px; border-radius: 50%; background: rgba(10, 11, 15, .6); }
-.cand-meta { padding: 7px 9px 4px; display: flex; flex-direction: column; gap: 2px; }
+.cand-meta { padding: 7px 9px 4px; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
 .cand-meta small { color: var(--muted); font-size: 11.5px; }
+.cand-meta .chip { margin: 1px 0 2px; }
+.cand.used { opacity: .55; }
+.cand.used:hover { opacity: .85; }
 .cand-actions { padding: 0 9px 9px; display: flex; justify-content: flex-end; }
 .scene-thumb.zoom, .shot-thumb.zoom { cursor: zoom-in; }
 

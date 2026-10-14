@@ -282,6 +282,28 @@ def test_draft_scene_footage_can_be_swapped(server, tmp_path):
     assert "job" in json.loads(req(port, "POST", "/api/make", {"draft_id": draft_id}, app.token)[2])
 
 
+def test_scene_search_marks_used_and_current(server, monkeypatch):
+    app, port = server
+    draft_id = "dupes"
+    folder = app._draft_dir(draft_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "script.json").write_text(json.dumps({
+        "title": "D", "scenes": [{"narration": "a", "search_query": "q"}, {"narration": "b", "search_query": "q"}]}),
+        encoding="utf-8")
+    (folder / "media.json").write_text(json.dumps({"scenes": {
+        "0": {"source": "pexels", "id": "1", "kind": "video", "url": "u1", "file": ""}}}), encoding="utf-8")
+    app.studio.history.mark_media(["pexels:99"])
+
+    from purffle_shorts import media as M
+    monkeypatch.setattr(M.Visuals, "candidates", lambda self, query, limit=30: [
+        M.MediaItem("pexels", "1", "video", url="u1"),    # this video's other scene
+        M.MediaItem("pexels", "99", "video", url="u99"),  # used by a past video
+        M.MediaItem("pexels", "5", "video", url="u5")])   # fresh
+    data = app.draft_search(draft_id, 1, "q")
+    flags = {c["id"]: (c["used"], c["current"]) for c in data["candidates"]}
+    assert flags == {"1": (True, False), "99": (True, False), "5": (False, False)}
+
+
 def test_browse_lists_dirs_and_audio_files(server, tmp_path):
     app, port = server
     root = tmp_path / "lib"
